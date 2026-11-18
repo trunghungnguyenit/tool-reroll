@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.pyc
+
+# PyInstaller output
+build/
+dist/
+
+# Generated at runtime
+data/shop_preview.png
+
+# Claude Code tooling (keep only CLAUDE.md)
+.claude/*
+!.claude/CLAUDE.md
