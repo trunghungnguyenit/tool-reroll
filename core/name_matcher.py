@@ -15,7 +15,7 @@ _ocr_langs = ("en-US", "vi-VN")
 
 
 def _detect_backend() -> str:
-    """Chọn engine OCR: winocr (Windows) hoặc rapidocr (dự phòng)."""
+    """Chọn engine OCR: 'winocr' (OCR của Windows) hoặc 'none' nếu không nạp được."""
     global _ocr_backend
     if _ocr_backend is not None:
         return _ocr_backend
@@ -23,21 +23,9 @@ def _detect_backend() -> str:
         import winocr  # noqa: F401
 
         _ocr_backend = "winocr"
-        return _ocr_backend
     except ImportError:
-        pass
-    try:
-        from rapidocr_onnxruntime import RapidOCR  # noqa: F401
-
-        _ocr_backend = "rapidocr"
-        return _ocr_backend
-    except ImportError:
-        pass
-    _ocr_backend = "none"
+        _ocr_backend = "none"
     return _ocr_backend
-
-
-_rapidocr_engine = None
 
 # --- Khớp tên: so OCR với TOÀN BỘ tên tướng, chỉ mua khi khớp tốt nhất là một mục tiêu ---
 DEFAULT_NAME_THRESHOLD = 0.80  # ngưỡng khớp mờ (fuzzy) mặc định
@@ -140,19 +128,6 @@ def _read_winocr(region: np.ndarray) -> str:
             loop.close()
 
 
-def _read_rapidocr(region: np.ndarray) -> str:
-    """Đọc chữ từ ảnh bằng RapidOCR (khi không có winocr)."""
-    global _rapidocr_engine
-    from rapidocr_onnxruntime import RapidOCR
-
-    if _rapidocr_engine is None:
-        _rapidocr_engine = RapidOCR()
-    result, _ = _rapidocr_engine(region)
-    if not result:
-        return ""
-    return " ".join(str(line[1]) for line in result if len(line) > 1)
-
-
 def normalize_name(text: str) -> str:
     """Chuẩn hóa tên: bỏ dấu, chữ thường, bỏ ký tự đặc biệt — để so sánh OCR dễ hơn."""
     text = text.replace("đ", "d").replace("Đ", "D")  # NFD không tách được đ/Đ
@@ -177,16 +152,13 @@ def extract_name_region(slot_frame: np.ndarray) -> np.ndarray:
 
 def read_name_from_slot(slot_frame: np.ndarray) -> str:
     """OCR đọc tên tướng từ 1 ô shop, trả về chuỗi text ('' nếu không đọc được; nguyên nhân lỗi vào drain_ocr_errors)."""
-    backend = _detect_backend()
-    if backend == "none":
-        record_ocr_error("Không có engine OCR (cài winocr hoặc rapidocr-onnxruntime)")
+    if _detect_backend() == "none":
+        record_ocr_error("Không có engine OCR (cài winocr)")
         return ""
 
     region = extract_name_region(slot_frame)
     try:
-        if backend == "winocr":
-            return _read_winocr(region)
-        return _read_rapidocr(region)
+        return _read_winocr(region)
     except Exception as e:
         record_ocr_error(f"{type(e).__name__}: {str(e)[:120]}")
         return ""

@@ -24,7 +24,7 @@ def capability_command(lang_tag: str) -> str:
 @dataclass
 class OcrStatus:
     ok: bool
-    backend: str  # "winocr" | "rapidocr" | "none"
+    backend: str  # "winocr" | "none"
     languages: list[str] = field(default_factory=list)  # ngôn ngữ đang dùng
     detail: str = ""  # lý do khi không ok
     hints: list[str] = field(default_factory=list)  # cách sửa (lệnh cài đặt...), cả khi ok (vd thiếu pack tùy chọn)
@@ -34,7 +34,7 @@ class OcrStatus:
         """Một dòng cho nhãn trên giao diện và Nhật ký."""
         if not self.ok:
             return f"lỗi — {self.detail}"
-        names = {"winocr": "Windows OCR", "rapidocr": "RapidOCR"}
+        names = {"winocr": "Windows OCR"}
         engine = names.get(self.backend, self.backend)
         return f"{engine} ({', '.join(self.languages)})" if self.languages else engine
 
@@ -117,7 +117,7 @@ def check_ocr(sample: str = SAMPLE_TEXT, wanted_extra: tuple[str, ...] = ()) -> 
             False,
             backend,
             detail="Không có engine OCR.",
-            hints=["Chạy: pip install winocr   (hoặc rapidocr-onnxruntime)"],
+            hints=["Chạy: pip install winocr"],
         )
 
     hints: list[str] = []

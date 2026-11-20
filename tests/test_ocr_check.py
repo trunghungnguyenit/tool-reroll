@@ -110,7 +110,7 @@ class TestStatusText:
         assert s.problem_text() == "Không có engine OCR.\n• Chạy A\n• Chạy B"
 
     def test_summary_variants(self):
-        assert oc.OcrStatus(True, "rapidocr", []).summary == "RapidOCR"
+        assert oc.OcrStatus(True, "khác", []).summary == "khác"  # engine lạ: hiện nguyên tên, không đoán
         assert oc.OcrStatus(True, "winocr", ["en-US", "vi-VN"]).summary == "Windows OCR (en-US, vi-VN)"
         assert oc.OcrStatus(False, "none", detail="x").summary == "lỗi — x"
 
