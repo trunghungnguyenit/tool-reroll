@@ -1,0 +1,14 @@
+# Lint chỉ để bắt LỖI THẬT và mã thừa, không ép phong cách (không có E501 giới hạn độ dài dòng, không có formatter).
+# Chạy: ruff check .   (cài bằng: pip install -r requirements-dev.txt)
+# tests/test_lint.py chạy lệnh này nên import thừa / biến thừa làm bộ test đỏ.
+target-version = "py311"
+extend-exclude = [".claude", "build", "dist"]
+
+[lint]
+select = [
+    "F",   # pyflakes: import thừa, biến thừa, tên chưa định nghĩa, so sánh `is` với literal...
+    "E4",  # import đặt sai chỗ (E402...)
+    "E7",  # câu lệnh dễ gây lỗi: bare except, tên biến mơ hồ (l, O, I), so sánh với None/True sai kiểu...
+    "E9",  # lỗi cú pháp / IO
+    "W",   # khoảng trắng thừa, escape sai trong chuỗi
+]

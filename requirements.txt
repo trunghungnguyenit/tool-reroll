@@ -1,7 +1,13 @@
-mss>=9.0.1
-opencv-python>=4.9.0
-numpy>=1.26.0
-Pillow>=10.0.0
-keyboard>=0.13.5
-requests>=2.31.0
-winocr>=0.0.8
+# Ghim đúng phiên bản đã chạy được (Python 3.14, Windows). Nâng cấp: đổi số, chạy lại test rồi build.
+# Phụ thuộc của winocr (các gói winrt-*) tự được pip chọn theo winocr.
+mss==10.2.0
+opencv-python==4.10.0.84
+numpy==2.5.3
+Pillow==12.3.0
+keyboard==0.13.5
+requests==2.34.2
+winocr==0.0.15
+PySide6-Essentials==6.12.0
+dxcam==0.3.0
+comtypes==1.4.17
+PyNaCl==1.6.2

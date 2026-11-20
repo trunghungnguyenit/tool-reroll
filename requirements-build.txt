@@ -1,0 +1,3 @@
+# Mọi thứ cần để ĐÓNG GÓI: thư viện chạy + dev (pytest, ruff) + PyInstaller ghim đúng bản đã dùng được.
+-r requirements-dev.txt
+pyinstaller==6.22.3
