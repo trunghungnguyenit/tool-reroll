@@ -826,42 +826,7 @@ class TestAppEntry:
         assert "tk" not in names and "Tk" not in src.replace("TFT", "")
 
 
-# ----------------------------------------------------------------------------- xuất chẩn đoán và mục Giấy phép
-class TestDiagnosticsButton:
-    def test_button_lives_in_the_journal_header_and_is_visible_in_both_layouts(self, make_window):
-        for size in ((1100, 820), (460, 780)):
-            w = make_window({"coords_version": config.COORDS_VERSION, "theme": "light"}, size=size, autoload=False)
-            assert w.diag_btn.isVisible() and w.diag_btn.text() == "Xuất chẩn đoán"
-            assert w.log_wrap.isAncestorOf(w.diag_btn) and w.diag_btn.toolTip()
-
-    def test_click_builds_report_then_reveals_it_and_unlocks(self, make_window, qtbot, monkeypatch, tmp_path):
-        from pathlib import Path
-
-        zip_path = tmp_path / "r.zip"
-        monkeypatch.setattr(ctl.diagnostics, "write_report", lambda cfg, running=False, **kw: zip_path)
-        revealed = []
-        monkeypatch.setattr(mw.diagnostics, "reveal_in_explorer", lambda p: revealed.append(p))
-        w = make_window({"coords_version": config.COORDS_VERSION, "theme": "light"}, autoload=False)
-        w.diag_btn.click()
-        assert not w.diag_btn.isEnabled() and w.diag_btn.text() == "Đang tạo..."  # phản hồi ngay, không treo giao diện
-        qtbot.waitUntil(lambda: revealed == [Path(zip_path)], timeout=3000)
-        assert w.diag_btn.isEnabled() and w.diag_btn.text() == "Xuất chẩn đoán"
-        assert f"Đã lưu báo cáo chẩn đoán: {zip_path}" in w.log_view.toPlainText()
-
-    def test_failure_shows_error_box_and_unlocks(self, make_window, qtbot, monkeypatch, boxes):
-        def boom(cfg, running=False, **kw):
-            raise OSError("đĩa đầy")
-
-        monkeypatch.setattr(ctl.diagnostics, "write_report", boom)
-        monkeypatch.setattr(mw.diagnostics, "reveal_in_explorer", lambda p: pytest.fail("không được mở thư mục khi lỗi"))
-        w = make_window({"coords_version": config.COORDS_VERSION, "theme": "light"}, autoload=False)
-        w.diag_btn.click()
-        qtbot.waitUntil(lambda: bool(boxes.items), timeout=3000)
-        kind, title, text = boxes.items[-1]
-        assert kind == "critical" and title == "Báo cáo chẩn đoán" and "đĩa đầy" in text
-        assert w.diag_btn.isEnabled()
-
-
+# ----------------------------------------------------------------------------- mục Giấy phép trong Nâng cao
 class TestLicenseSection:
     @pytest.fixture
     def patch_license(self, monkeypatch):

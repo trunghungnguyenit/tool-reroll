@@ -5,7 +5,6 @@ rộng  = hai vùng làm việc cạnh nhau (Tướng | Sẵn sàng + Vùng Shop
 hẹp   = một cột với thanh tab ở dưới (Tướng / Vùng Shop / Chạy), vùng chạm lớn.
 Khung Nhật ký luôn hiện ở dưới cùng."""
 
-from pathlib import Path
 
 from PIL import Image
 from shiboken6 import isValid
@@ -36,7 +35,6 @@ from PySide6.QtWidgets import (
 )
 
 from core import controller as ctl
-from core import diagnostics
 from core.config import NUMERIC_LIMITS
 from core.single_instance import APP_TITLE
 from ui import overlay as overlay_mod
@@ -473,12 +471,6 @@ class MainWindow(QMainWindow):
         copy.setProperty("filter", True)
         copy.clicked.connect(lambda: QApplication.clipboard().setText(self.log_view.toPlainText()))
         head.addWidget(copy)
-        self.diag_btn = QToolButton()
-        self.diag_btn.setText("Xuất chẩn đoán")
-        self.diag_btn.setProperty("filter", True)
-        self.diag_btn.setToolTip("Gom phiên bản, kết quả tự kiểm tra, cấu hình (đã lược tọa độ) và log thành một file zip ở Desktop để gửi khi cần hỗ trợ")
-        self.diag_btn.clicked.connect(self.c.export_diagnostics)
-        head.addWidget(self.diag_btn)
         lay.addLayout(head)
         self.log_view = QPlainTextEdit()
         self.log_view.setObjectName("log")
@@ -726,13 +718,6 @@ class MainWindow(QMainWindow):
     def _ev_ocr(self, text, tone):
         self.chip_ocr.setText(text)
         set_prop(self.chip_ocr, "tone", tone)
-
-    def _ev_diagnostics_busy(self, busy):
-        self.diag_btn.setEnabled(not busy)
-        self.diag_btn.setText("Đang tạo..." if busy else "Xuất chẩn đoán")
-
-    def _ev_diagnostics_saved(self, path):
-        diagnostics.reveal_in_explorer(Path(path))
 
     def _ev_speed(self, text):
         self.chip_speed.setText("Tốc độ: chưa chạy" if text == ctl.SPEED_IDLE_TEXT else text)

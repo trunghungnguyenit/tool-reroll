@@ -15,8 +15,7 @@ from core import config as _config
 
 # Phải khớp các file trong core/ (tests/test_build_files.py kiểm tra) và hiddenimports của TFT_Auto_Buy.spec.
 CORE_MODULES = (
-    "core.build_info", "core.buyer", "core.capture", "core.champions", "core.config", "core.controller", "core.diagnostics", "core.dpi",
-    "core.game_window", "core.hotkey",
+    "core.build_info", "core.buyer", "core.capture", "core.champions", "core.config", "core.controller", "core.dpi", "core.game_window", "core.hotkey",
     "core.license", "core.logging_setup", "core.name_matcher", "core.ocr_check", "core.ocr_pool", "core.preview", "core.scanner",
     "core.selftest", "core.single_instance",
 )
@@ -116,9 +115,8 @@ def _data_dir_check() -> str:
     return f"{data} ({'đã có' if data.exists() else 'sẽ được tạo khi chạy'})"
 
 
-def collect_checks(skip: tuple[str, ...] = ()) -> list[tuple[bool, str, str]]:
-    """[(đạt?, tên kiểm tra, chi tiết)]. Lỗi của từng kiểm tra được ghi lại, không làm dừng các kiểm tra khác.
-    `skip`: tên các kiểm tra bỏ qua (báo cáo chẩn đoán bỏ kiểm tra DXGI khi đang quét để không tranh màn hình)."""
+def collect_checks() -> list[tuple[bool, str, str]]:
+    """[(đạt?, tên kiểm tra, chi tiết)]. Lỗi của từng kiểm tra được ghi lại, không làm dừng các kiểm tra khác."""
     checks = [
         ("phiên bản", lambda: f"{build_info.describe()} | Python {sys.version.split()[0]} | "
                               f"{'đóng gói' if getattr(sys, 'frozen', False) else 'mã nguồn'}"),
@@ -134,8 +132,6 @@ def collect_checks(skip: tuple[str, ...] = ()) -> list[tuple[bool, str, str]]:
     ]
     results = []
     for name, fn in checks:
-        if name in skip:
-            continue
         try:
             results.append((True, name, str(fn())))
         except Exception as e:
@@ -143,19 +139,13 @@ def collect_checks(skip: tuple[str, ...] = ()) -> list[tuple[bool, str, str]]:
     return results
 
 
-def format_results(results: list[tuple[bool, str, str]]) -> str:
-    """Báo cáo dạng chữ: mỗi kiểm tra một dòng, dòng cuối là kết quả chung."""
-    failed = sum(1 for ok, _, _ in results if not ok)
-    lines = [f"[{'OK ' if ok else 'LỖI'}] {name}: {detail}" for ok, name, detail in results]
-    lines.append(f"Kết quả: {'ĐẠT' if not failed else f'{failed} kiểm tra LỖI'}")
-    return "\n".join(lines) + "\n"
-
-
 def run_selftest(report_path: Path | None = None) -> int:
     """Chạy các kiểm tra, ghi báo cáo ra file (và stdout nếu có). Mã thoát 0 nếu đạt hết, 1 nếu có lỗi."""
     results = collect_checks()
     failed = sum(1 for ok, _, _ in results if not ok)
-    text = format_results(results)
+    lines = [f"[{'OK ' if ok else 'LỖI'}] {name}: {detail}" for ok, name, detail in results]
+    lines.append(f"Kết quả: {'ĐẠT' if not failed else f'{failed} kiểm tra LỖI'}")
+    text = "\n".join(lines) + "\n"
     path = Path(report_path) if report_path else DEFAULT_REPORT
     try:
         path.write_text(text, encoding="utf-8")
