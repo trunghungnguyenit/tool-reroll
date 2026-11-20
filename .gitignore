@@ -6,9 +6,25 @@ __pycache__/
 build/
 dist/
 
-# Generated at runtime
-data/shop_preview.png
+# Dữ liệu người dùng và file sinh lúc chạy: config cá nhân, ảnh chụp màn hình, cache ảnh/tên tướng, log
+data/
+
+# Sinh khi đóng gói (ngày build)
+core/_build_stamp.py
 
 # Claude Code tooling (keep only CLAUDE.md)
 .claude/*
+.claude
 !.claude/CLAUDE.md
+
+lenh_claude_new.md
+.pytest_cache/
+.ruff_cache/
+
+# Khóa riêng cấp Key: tuyệt đối không commit (công cụ cấp Key nằm ngoài repo)
+*.key
+issued.csv
+tft_license_admin/
+# Báo cáo coverage
+.coverage
+htmlcov/
