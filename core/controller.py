@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Callable
 
 from core import config as _config
+from core import diagnostics
 from core import license as license_check
 from core.build_info import app_version
 from core.champions import (
@@ -117,6 +118,7 @@ class AppController:
         self.last_speed: str | None = None
         self._preview_seq = 0
         self._preview_inflight = 0
+        self._diag_busy = False
 
     # ------------------------------------------------------------------ tiện ích
     def notify(self, event: str, **data):
@@ -468,6 +470,51 @@ class AppController:
         self.last_speed_shown()
         self.set_status("Đã dừng")
         self.notify("running_changed", running=False)
+
+    # ------------------------------------------------------------------ chẩn đoán và giấy phép
+    def export_diagnostics(self):
+        """Nút 'Xuất chẩn đoán': tạo file zip báo cáo ở luồng nền (selftest mất vài giây), xong thì báo giao diện."""
+        if self._diag_busy:
+            return
+        self._diag_busy = True
+        self.notify("diagnostics_busy", busy=True)
+        threading.Thread(target=self._diagnostics_background, args=(dict(self.config), self.running), daemon=True).start()
+
+    def _diagnostics_background(self, cfg: dict, running: bool):
+        path, error = None, ""
+        try:
+            path = diagnostics.write_report(cfg, running=running)
+        except Exception as e:
+            error = f"{type(e).__name__}: {e}"
+        self._post_safe(lambda: self._diagnostics_done(path, error))
+
+    def _diagnostics_done(self, path, error: str):
+        self._diag_busy = False
+        self.notify("diagnostics_busy", busy=False)
+        if error:
+            self.log(f"Không tạo được báo cáo chẩn đoán: {error}")
+            self.notify("dialog", level="error", title="Báo cáo chẩn đoán", text="Không tạo được báo cáo." + chr(10) * 2 + error)
+            return
+        self.log(f"Đã lưu báo cáo chẩn đoán: {path}")
+        self.notify("diagnostics_saved", path=str(path))
+
+    def license_summary(self) -> dict:
+        """Thông tin giấy phép để hiện ở mục Nâng cao: ok, mã máy, key_id, giờ kích hoạt, lý do nếu không hợp lệ (không có chuỗi Key)."""
+        try:
+            code, code_error = license_check.machine_code(), ""
+        except license_check.LicenseError as e:
+            code, code_error = "", str(e)
+        status = license_check.check_installed()
+        activated = ""
+        if status.activated_at:
+            activated = datetime.fromtimestamp(status.activated_at).strftime("%Y-%m-%d %H:%M")
+        return {
+            "ok": status.ok,
+            "machine_code": code,
+            "key_id": status.info.key_id if status.info else "",
+            "activated": activated,
+            "reason": status.reason or code_error,
+        }
 
     def last_speed_shown(self):
         self.notify("speed", text=f"Lần quét trước: {self.last_speed}" if self.last_speed else SPEED_IDLE_TEXT)

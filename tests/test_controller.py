@@ -6,6 +6,8 @@ import queue
 import threading
 import time
 import types
+from datetime import datetime
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -905,3 +907,123 @@ class TestRollKey:
         k._keyboard = None
         k.register_roll_key()
         k.set_roll_key("x")
+
+
+# ----------------------------------------------------------------------------- chẩn đoán và giấy phép
+class TestDiagnostics:
+    def test_export_runs_in_background_then_reports_path(self, make, ev, monkeypatch, tmp_path):
+        k = make()
+        seen = {}
+        zip_path = tmp_path / "TFT_Auto_Buy_chan_doan_x.zip"
+
+        def fake_write(cfg, running=False, **kw):
+            seen.update(cfg=cfg, running=running, thread=threading.current_thread().name)
+            return zip_path
+
+        monkeypatch.setattr(ctl.diagnostics, "write_report", fake_write)
+        k.export_diagnostics()
+        assert ev.last("diagnostics_busy") == {"busy": True}
+        assert wait_for(lambda: ev.last("diagnostics_saved") is not None)
+        assert ev.last("diagnostics_saved") == {"path": str(zip_path)}
+        assert ev.last("diagnostics_busy") == {"busy": False}
+        assert seen["thread"] != threading.main_thread().name  # selftest mất vài giây: không được chặn luồng giao diện
+        assert seen["running"] is False and seen["cfg"] is not k.config  # truyền bản sao, luồng nền không đọc config đang sửa
+        assert any(str(zip_path) in d["text"] for d in ev.of("log"))
+
+    def test_running_flag_is_passed_when_scanning(self, make, ev, monkeypatch):
+        k = make()
+        k._finish_start(plan(), {}, OK_OCR)  # cách các test khác đưa controller vào trạng thái đang quét
+        assert k.running
+        got = {}
+        monkeypatch.setattr(ctl.diagnostics, "write_report", lambda cfg, running=False, **kw: got.setdefault("r", running) and Path("x.zip"))
+        k.export_diagnostics()
+        assert wait_for(lambda: "r" in got) and got["r"] is True
+
+    def test_second_click_while_busy_is_ignored(self, make, ev, monkeypatch):
+        k = make()
+        gate = threading.Event()
+        calls = []
+
+        def slow(cfg, running=False, **kw):
+            calls.append(1)
+            gate.wait(2)
+            return Path("x.zip")
+
+        monkeypatch.setattr(ctl.diagnostics, "write_report", slow)
+        k.export_diagnostics()
+        k.export_diagnostics()
+        k.export_diagnostics()
+        gate.set()
+        assert wait_for(lambda: ev.last("diagnostics_saved") is not None)
+        assert calls == [1] and len(ev.of("diagnostics_busy")) == 2  # bật một lần, tắt một lần
+
+    def test_can_export_again_after_finishing(self, make, ev, monkeypatch):
+        k = make()
+        monkeypatch.setattr(ctl.diagnostics, "write_report", lambda cfg, running=False, **kw: Path("x.zip"))
+        k.export_diagnostics()
+        assert wait_for(lambda: len(ev.of("diagnostics_saved")) == 1)
+        k.export_diagnostics()
+        assert wait_for(lambda: len(ev.of("diagnostics_saved")) == 2)
+
+    def test_failure_is_logged_and_shown_and_unlocks_button(self, make, ev, monkeypatch):
+        k = make()
+
+        def boom(cfg, running=False, **kw):
+            raise PermissionError("Desktop bị khóa")
+
+        monkeypatch.setattr(ctl.diagnostics, "write_report", boom)
+        k.export_diagnostics()
+        assert wait_for(lambda: bool(ev.dialogs("error")))
+        assert "PermissionError: Desktop bị khóa" in ev.dialogs("error")[0]["text"]
+        assert ev.last("diagnostics_busy") == {"busy": False} and ev.last("diagnostics_saved") is None
+        assert "Không tạo được báo cáo chẩn đoán" in ev.logs()
+
+    def test_closing_app_while_building_does_not_notify(self, make, ev, monkeypatch):
+        k = make()
+        gate = threading.Event()
+        monkeypatch.setattr(ctl.diagnostics, "write_report", lambda cfg, running=False, **kw: gate.wait(2) and Path("x.zip"))
+        k.export_diagnostics()
+        k.closing = True
+        gate.set()
+        time.sleep(0.2)
+        drain()
+        assert ev.last("diagnostics_saved") is None
+
+
+class TestLicenseSummary:
+    def test_valid_license(self, make, monkeypatch):
+        from core import license as lic
+
+        info = lic.KeyInfo(machine=b"\0" * 16, issued_at=1, expires_at=2, key_id="4ca1b490fca75c29")
+        monkeypatch.setattr(ctl.license_check, "check_installed", lambda *a: lic.Status(True, info=info, activated_at=1_800_000_000))
+        monkeypatch.setattr(ctl.license_check, "machine_code", lambda: "AAAA-BBBB")
+        s = make().license_summary()
+        assert s["ok"] and s["key_id"] == "4ca1b490fca75c29" and s["machine_code"] == "AAAA-BBBB"
+        assert s["activated"] == datetime.fromtimestamp(1_800_000_000).strftime("%Y-%m-%d %H:%M") and s["reason"] == ""
+
+    def test_missing_activation_time_is_blank(self, make, monkeypatch):
+        from core import license as lic
+
+        info = lic.KeyInfo(machine=b"\0" * 16, issued_at=1, expires_at=2, key_id="abc")
+        monkeypatch.setattr(ctl.license_check, "check_installed", lambda *a: lic.Status(True, info=info))
+        monkeypatch.setattr(ctl.license_check, "machine_code", lambda: "AAAA")
+        assert make().license_summary()["activated"] == ""
+
+    def test_invalid_license_gives_reason(self, make, monkeypatch):
+        from core import license as lic
+
+        monkeypatch.setattr(ctl.license_check, "check_installed", lambda *a: lic.Status(False, "Giấy phép bị hỏng"))
+        monkeypatch.setattr(ctl.license_check, "machine_code", lambda: "AAAA")
+        s = make().license_summary()
+        assert not s["ok"] and s["reason"] == "Giấy phép bị hỏng" and s["key_id"] == "" and s["machine_code"] == "AAAA"
+
+    def test_machine_code_error_does_not_crash(self, make, monkeypatch):
+        from core import license as lic
+
+        def boom():
+            raise lic.LicenseError("không đọc được định danh")
+
+        monkeypatch.setattr(ctl.license_check, "check_installed", lambda *a: lic.Status(False, ""))
+        monkeypatch.setattr(ctl.license_check, "machine_code", boom)
+        s = make().license_summary()
+        assert s["machine_code"] == "" and "không đọc được định danh" in s["reason"]

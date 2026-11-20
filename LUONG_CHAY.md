@@ -98,7 +98,27 @@ Người dùng dán KEY → activate(): chữ ký Ed25519 → đúng mã máy �
 - Exe chỉ chứa **khóa công khai** (`PUBLIC_KEY_B64`): kiểm tra được chữ ký nhưng không tự tạo Key được. **Khóa riêng**
   (`private.key`) chỉ nằm trong thư mục công cụ cấp Key của người bán, ngoài repo (`.gitignore` chặn `*.key`); mất nó là không cấp
   được Key nữa, lộ nó là ai cũng cấp được Key.
+- Xem lại giấy phép: **Nâng cao → Giấy phép** hiện trạng thái (✓ đã kích hoạt / ✗ lý do), Key ID, giờ kích hoạt và **Mã máy** (nút
+  Sao chép, để xin Key mới khi cài lại Windows). Chỉ xem, không có nút xóa/nhập lại; không bao giờ hiện chuỗi Key.
 - `--selftest` không cần máy đã kích hoạt: chỉ kiểm tra thư viện ký số, mã máy và DPAPI chạy được trong bản đóng gói.
+
+### Báo cáo chẩn đoán (`core/diagnostics.py`)
+
+Nút **Xuất chẩn đoán** ở khung Nhật ký gom thông tin để hỗ trợ người mua mà không phải hỏi từng thứ. Chạy ở luồng nền (selftest mất
+vài giây), xong thì lưu zip `TFT_Auto_Buy_chan_doan_YYYYMMDD_HHMMSS.zip` ra **Desktop** (đúng thư mục Desktop của Windows, kể cả khi
+OneDrive chuyển hướng; không ghi được thì vào `data/`) rồi mở Explorer chọn sẵn file.
+
+| Trong zip | Nội dung |
+| --------- | -------- |
+| `thong-tin.txt` | phiên bản, Windows, Python, số màn hình/độ phân giải, quyền Admin, đang quét hay không, Mã máy, Key ID + giờ kích hoạt |
+| `selftest.txt` | kết quả `--selftest` (đang quét thì bỏ kiểm tra DXGI để không tranh việc chụp màn hình) |
+| `config.json` | cài đặt, đã lược: chỉ còn kích thước vùng Shop, số điểm click, số ảnh tự tải lên (không có tọa độ/đường dẫn) |
+| `logs/app.log*` | tối đa 3 file log xoay vòng (**nguyên văn**: có dòng ghi tọa độ điểm click/vùng Shop lúc bạn chọn) |
+
+**Không có:** chuỗi Key, khóa, ảnh chụp shop, ảnh mẫu (`tests/test_diagnostics.py` kiểm tra chuỗi Key không xuất hiện ở file nào).
+**Còn lộ:** việc lược chỉ áp dụng cho `config.json`. Log giữ nguyên tọa độ trên màn hình, và dòng `thư mục data` trong
+`selftest.txt` có đường dẫn chứa tên tài khoản Windows. Đây là thông tin kỹ thuật, không phải mật khẩu hay Key, nhưng người dùng
+nên biết trước khi gửi file.
 - Giới hạn đã chấp nhận: giờ máy là nguồn thời gian duy nhất khi offline (chỉnh lùi đồng hồ để nhập Key quá hạn chỉ bị chặn một
   phần: không sớm hơn lúc cấp Key và không sớm hơn ngày build); không thu hồi được Key đã cấp; đổi ổ hệ thống hoặc cài lại Windows
   thì phải xin Key mới; người sửa được chính exe thì bỏ qua được mọi kiểm tra.
@@ -323,6 +343,7 @@ F8 lần nữa / bấm DỪNG / đóng cửa sổ
 | `core/controller.py`    | Điều phối: chọn tướng, điều kiện chạy, bắt đầu/dừng, preview (không import Qt) |
 | `ui/`                   | Giao diện Qt: cửa sổ chính, danh sách tướng, overlay, theme, hộp thoại nhập Key |
 | `core/license.py`       | Key ký số offline gắn mã máy, hạn nhập 24h, dùng một lần, lưu DPAPI |
+| `core/diagnostics.py`   | Báo cáo chẩn đoán (zip) cho nút "Xuất chẩn đoán": thông tin máy, selftest, config đã lược, log |
 | `core/config.py`        | Đọc/ghi `data/config.json`                    |
 | `core/champions.py`     | Tải danh sách tướng + ảnh từ Riot API         |
 | `core/scanner.py`       | Quét shop, nhận diện, quyết định mua          |

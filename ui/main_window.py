@@ -5,6 +5,8 @@ rộng  = hai vùng làm việc cạnh nhau (Tướng | Sẵn sàng + Vùng Shop
 hẹp   = một cột với thanh tab ở dưới (Tướng / Vùng Shop / Chạy), vùng chạm lớn.
 Khung Nhật ký luôn hiện ở dưới cùng."""
 
+from pathlib import Path
+
 from PIL import Image
 from shiboken6 import isValid
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
@@ -34,6 +36,7 @@ from PySide6.QtWidgets import (
 )
 
 from core import controller as ctl
+from core import diagnostics
 from core.config import NUMERIC_LIMITS
 from core.single_instance import APP_TITLE
 from ui import overlay as overlay_mod
@@ -416,6 +419,26 @@ class MainWindow(QMainWindow):
         self.theme_box.currentIndexChanged.connect(self._on_theme_changed)
         trow.addWidget(self.theme_box)
         b.addLayout(trow)
+        license_title = QLabel("Giấy phép")
+        license_title.setObjectName("heading")
+        b.addWidget(license_title)
+        self.license_state = QLabel("")
+        self.license_state.setWordWrap(True)
+        self.license_state.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        b.addWidget(self.license_state)
+        mrow = QHBoxLayout()  # nút Sao chép ở hàng tiêu đề để ô mã (40 ký tự) được trọn bề rộng, không bị cắt ở cửa sổ hẹp
+        mrow.addWidget(QLabel("Mã máy (gửi cho người bán khi cần Key mới)"), 1)
+        self.machine_copy = QToolButton()
+        self.machine_copy.setText("Sao chép")
+        self.machine_copy.setProperty("filter", True)
+        self.machine_copy.clicked.connect(lambda: QApplication.clipboard().setText(self.machine_edit.text()))
+        mrow.addWidget(self.machine_copy)
+        b.addLayout(mrow)
+        self.machine_edit = QLineEdit()
+        self.machine_edit.setReadOnly(True)
+        self.machine_edit.setAccessibleName("Mã máy")
+        b.addWidget(self.machine_edit)
+        self._refresh_license()
         self.adv_body.setVisible(False)
         lay.addWidget(self.adv_body)
         return card
@@ -450,6 +473,12 @@ class MainWindow(QMainWindow):
         copy.setProperty("filter", True)
         copy.clicked.connect(lambda: QApplication.clipboard().setText(self.log_view.toPlainText()))
         head.addWidget(copy)
+        self.diag_btn = QToolButton()
+        self.diag_btn.setText("Xuất chẩn đoán")
+        self.diag_btn.setProperty("filter", True)
+        self.diag_btn.setToolTip("Gom phiên bản, kết quả tự kiểm tra, cấu hình (đã lược tọa độ) và log thành một file zip ở Desktop để gửi khi cần hỗ trợ")
+        self.diag_btn.clicked.connect(self.c.export_diagnostics)
+        head.addWidget(self.diag_btn)
         lay.addLayout(head)
         self.log_view = QPlainTextEdit()
         self.log_view.setObjectName("log")
@@ -533,6 +562,8 @@ class MainWindow(QMainWindow):
         self.palette_ = theme.pick(self._mode_pref)
         QApplication.instance().setStyleSheet(theme.stylesheet(self.palette_))
         self.view.set_palette(self.palette_)
+        if hasattr(self, "license_state"):  # lần gọi đầu (trong __init__) thì mục Nâng cao chưa dựng
+            self._refresh_license()
         for sw in (self.sw_image, self.sw_name):
             sw.set_colors(self.palette_.accent, self.palette_.border, self.palette_.text)
         self._refresh_all()
@@ -696,6 +727,13 @@ class MainWindow(QMainWindow):
         self.chip_ocr.setText(text)
         set_prop(self.chip_ocr, "tone", tone)
 
+    def _ev_diagnostics_busy(self, busy):
+        self.diag_btn.setEnabled(not busy)
+        self.diag_btn.setText("Đang tạo..." if busy else "Xuất chẩn đoán")
+
+    def _ev_diagnostics_saved(self, path):
+        diagnostics.reveal_in_explorer(Path(path))
+
     def _ev_speed(self, text):
         self.chip_speed.setText("Tốc độ: chưa chạy" if text == ctl.SPEED_IDLE_TEXT else text)
         self.chip_speed.setToolTip(text)
@@ -765,7 +803,20 @@ class MainWindow(QMainWindow):
         self.c.interval_text = str(value)
         self.c.changed()
 
+    def _refresh_license(self):
+        info = self.c.license_summary()
+        if info["ok"]:
+            text = f"✓ Đã kích hoạt cho máy này · Key ID {info['key_id']}" + (f" · kích hoạt {info['activated']}" if info["activated"] else "")
+            tone = "ok"
+        else:
+            text, tone = f"✗ Giấy phép không hợp lệ: {info['reason']}", "fail"
+        self.license_state.setText(text)
+        self.license_state.setStyleSheet(f"color: {theme.tone_color(self.palette_, tone)};")
+        self.machine_edit.setText(info["machine_code"])
+
     def _toggle_advanced(self, on: bool):
+        if on:
+            self._refresh_license()  # giấy phép có thể đổi từ lần mở trước
         self.adv_body.setVisible(on)
         self.adv_toggle.setText(("▾" if on else "▸") + "  Nâng cao")
 

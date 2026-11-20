@@ -824,3 +824,110 @@ class TestAppEntry:
         src = (Path(__file__).resolve().parent.parent / "main.py").read_text(encoding="utf-8")
         names = {n.id for n in ast.walk(ast.parse(src)) if isinstance(n, ast.Name)}
         assert "tk" not in names and "Tk" not in src.replace("TFT", "")
+
+
+# ----------------------------------------------------------------------------- xuất chẩn đoán và mục Giấy phép
+class TestDiagnosticsButton:
+    def test_button_lives_in_the_journal_header_and_is_visible_in_both_layouts(self, make_window):
+        for size in ((1100, 820), (460, 780)):
+            w = make_window({"coords_version": config.COORDS_VERSION, "theme": "light"}, size=size, autoload=False)
+            assert w.diag_btn.isVisible() and w.diag_btn.text() == "Xuất chẩn đoán"
+            assert w.log_wrap.isAncestorOf(w.diag_btn) and w.diag_btn.toolTip()
+
+    def test_click_builds_report_then_reveals_it_and_unlocks(self, make_window, qtbot, monkeypatch, tmp_path):
+        from pathlib import Path
+
+        zip_path = tmp_path / "r.zip"
+        monkeypatch.setattr(ctl.diagnostics, "write_report", lambda cfg, running=False, **kw: zip_path)
+        revealed = []
+        monkeypatch.setattr(mw.diagnostics, "reveal_in_explorer", lambda p: revealed.append(p))
+        w = make_window({"coords_version": config.COORDS_VERSION, "theme": "light"}, autoload=False)
+        w.diag_btn.click()
+        assert not w.diag_btn.isEnabled() and w.diag_btn.text() == "Đang tạo..."  # phản hồi ngay, không treo giao diện
+        qtbot.waitUntil(lambda: revealed == [Path(zip_path)], timeout=3000)
+        assert w.diag_btn.isEnabled() and w.diag_btn.text() == "Xuất chẩn đoán"
+        assert f"Đã lưu báo cáo chẩn đoán: {zip_path}" in w.log_view.toPlainText()
+
+    def test_failure_shows_error_box_and_unlocks(self, make_window, qtbot, monkeypatch, boxes):
+        def boom(cfg, running=False, **kw):
+            raise OSError("đĩa đầy")
+
+        monkeypatch.setattr(ctl.diagnostics, "write_report", boom)
+        monkeypatch.setattr(mw.diagnostics, "reveal_in_explorer", lambda p: pytest.fail("không được mở thư mục khi lỗi"))
+        w = make_window({"coords_version": config.COORDS_VERSION, "theme": "light"}, autoload=False)
+        w.diag_btn.click()
+        qtbot.waitUntil(lambda: bool(boxes.items), timeout=3000)
+        kind, title, text = boxes.items[-1]
+        assert kind == "critical" and title == "Báo cáo chẩn đoán" and "đĩa đầy" in text
+        assert w.diag_btn.isEnabled()
+
+
+class TestLicenseSection:
+    @pytest.fixture
+    def patch_license(self, monkeypatch):
+        from core import license as lic
+
+        state = {"status": lic.Status(True, info=lic.KeyInfo(b"\0" * 16, 1, 2, "4ca1b490fca75c29"), activated_at=1_800_000_000),
+                 "code": "5ZEN-JAHY-CSCA-HQ3D-ZV7E-KW6U-TPIM-2OHY"}
+        monkeypatch.setattr(ctl.license_check, "check_installed", lambda *a: state["status"])
+        monkeypatch.setattr(ctl.license_check, "machine_code", lambda: state["code"])
+        return state
+
+    def open_advanced(self, w):
+        if w._compact:
+            w.tabbar.setCurrentIndex(mw.PAGE_RUN)
+        w.adv_toggle.setChecked(True)
+        QApplication.processEvents()
+
+    def test_shows_state_key_id_activation_time_and_machine_code(self, make_window, patch_license):
+        from datetime import datetime
+
+        w = make_window({"coords_version": config.COORDS_VERSION, "theme": "light"}, autoload=False)
+        self.open_advanced(w)
+        text = w.license_state.text()
+        assert text.startswith("✓ Đã kích hoạt cho máy này") and "4ca1b490fca75c29" in text
+        assert datetime.fromtimestamp(1_800_000_000).strftime("%Y-%m-%d %H:%M") in text
+        assert w.machine_edit.text() == patch_license["code"] and w.machine_edit.isReadOnly()
+        assert theme.LIGHT.ok in w.license_state.styleSheet()
+        assert "Key" in text and len(text) < 200  # chỉ key_id, không phải chuỗi Key
+
+    def test_copy_button_copies_the_machine_code(self, make_window, patch_license):
+        w = make_window({"coords_version": config.COORDS_VERSION, "theme": "light"}, autoload=False)
+        self.open_advanced(w)
+        QApplication.clipboard().setText("")
+        w.machine_copy.click()
+        assert QApplication.clipboard().text() == patch_license["code"]
+
+    def test_invalid_license_is_shown_in_fail_color(self, make_window, patch_license):
+        from core import license as lic
+
+        patch_license["status"] = lic.Status(False, "Giấy phép không dùng được trên máy này")
+        w = make_window({"coords_version": config.COORDS_VERSION, "theme": "light"}, autoload=False)
+        self.open_advanced(w)
+        assert w.license_state.text().startswith("✗ Giấy phép không hợp lệ: Giấy phép không dùng được")
+        assert theme.LIGHT.fail in w.license_state.styleSheet()
+
+    def test_refreshes_every_time_advanced_is_opened(self, make_window, patch_license):
+        from core import license as lic
+
+        w = make_window({"coords_version": config.COORDS_VERSION, "theme": "light"}, autoload=False)
+        self.open_advanced(w)
+        assert "✓" in w.license_state.text()
+        w.adv_toggle.setChecked(False)
+        patch_license["status"] = lic.Status(False, "Giấy phép đã bị xóa")
+        patch_license["code"] = "MOI-MOI-MOI"
+        w.adv_toggle.setChecked(True)
+        assert "Giấy phép đã bị xóa" in w.license_state.text() and w.machine_edit.text() == "MOI-MOI-MOI"
+
+    def test_follows_theme_color_when_theme_changes(self, make_window, patch_license):
+        w = make_window({"coords_version": config.COORDS_VERSION, "theme": "light"}, autoload=False)
+        self.open_advanced(w)
+        w.theme_box.setCurrentIndex(w.theme_box.findData("dark"))
+        assert theme.DARK.ok in w.license_state.styleSheet()
+
+    def test_fits_in_compact_layout_without_clipping(self, make_window, patch_license):
+        w = make_window({"coords_version": config.COORDS_VERSION, "theme": "light"}, size=(460, 780), autoload=False)
+        self.open_advanced(w)
+        assert w._compact and w.machine_edit.isVisible() and w.machine_copy.isVisible()
+        assert w.machine_edit.width() >= 120
+        assert w.machine_edit.fontMetrics().horizontalAdvance(w.machine_edit.text()) <= w.machine_edit.width() + 40

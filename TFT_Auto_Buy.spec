@@ -36,6 +36,7 @@ a = Analysis(
         "core.license",
         "core.capture",
         "core.controller",
+        "core.diagnostics",
         "core._build_stamp",
         "core.selftest",
         "core.champions",

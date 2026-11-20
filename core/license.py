@@ -63,6 +63,7 @@ class Status:
     reason: str = ""
     missing: bool = False  # chưa từng kích hoạt (khác với giấy phép có nhưng hỏng/không hợp lệ)
     info: KeyInfo | None = None
+    activated_at: int | None = None  # giờ máy lúc kích hoạt (giây Unix), để hiển thị
 
 
 # ------------------------------------------------------------------ mã hóa văn bản
@@ -272,7 +273,8 @@ def check_installed(public_key: bytes | None = None) -> Status:
         info = verify_key(str(data.get("key", "")), machine_hash(), public_key)
     except LicenseError as e:
         return Status(False, f"Giấy phép không hợp lệ: {e}")
-    return Status(True, info=info)
+    activated = data.get("activated_at")
+    return Status(True, info=info, activated_at=activated if isinstance(activated, int) else None)
 
 
 def require_active() -> None:

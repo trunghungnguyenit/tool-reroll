@@ -274,3 +274,17 @@ def test_private_key_can_never_be_committed():
                                text=True, encoding="utf-8").stdout.splitlines()
     leaked = [f for f in tracked + untracked if f.endswith(".key") or Path(f).name == "issued.csv"]
     assert not leaked, f"file bí mật sẽ bị commit: {leaked}"
+
+
+def test_installed_status_reports_activation_time(env, seller):
+    lic.activate(key_for(seller), now=NOW)
+    status = lic.check_installed()
+    assert status.ok and status.activated_at == int(NOW)
+
+
+def test_activation_time_missing_or_wrong_type_is_none_not_an_error(env, seller):
+    key = key_for(seller)
+    for bad in (None, "hôm qua", 1.5):
+        lic._write_protected(lic.LICENSE_PATH, {"key": lic._canonical(key), "activated_at": bad})
+        status = lic.check_installed()
+        assert status.ok and status.activated_at is None
