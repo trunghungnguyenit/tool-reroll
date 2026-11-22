@@ -424,18 +424,6 @@ class MainWindow(QMainWindow):
         self.license_state.setWordWrap(True)
         self.license_state.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         b.addWidget(self.license_state)
-        mrow = QHBoxLayout()  # nút Sao chép ở hàng tiêu đề để ô mã (40 ký tự) được trọn bề rộng, không bị cắt ở cửa sổ hẹp
-        mrow.addWidget(QLabel("Mã máy (gửi cho người bán khi cần Key mới)"), 1)
-        self.machine_copy = QToolButton()
-        self.machine_copy.setText("Sao chép")
-        self.machine_copy.setProperty("filter", True)
-        self.machine_copy.clicked.connect(lambda: QApplication.clipboard().setText(self.machine_edit.text()))
-        mrow.addWidget(self.machine_copy)
-        b.addLayout(mrow)
-        self.machine_edit = QLineEdit()
-        self.machine_edit.setReadOnly(True)
-        self.machine_edit.setAccessibleName("Mã máy")
-        b.addWidget(self.machine_edit)
         self._refresh_license()
         self.adv_body.setVisible(False)
         lay.addWidget(self.adv_body)
@@ -797,7 +785,6 @@ class MainWindow(QMainWindow):
             text, tone = f"✗ Giấy phép không hợp lệ: {info['reason']}", "fail"
         self.license_state.setText(text)
         self.license_state.setStyleSheet(f"color: {theme.tone_color(self.palette_, tone)};")
-        self.machine_edit.setText(info["machine_code"])
 
     def _toggle_advanced(self, on: bool):
         if on:

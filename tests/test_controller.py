@@ -915,9 +915,8 @@ class TestLicenseSummary:
 
         info = lic.KeyInfo(machine=b"\0" * 16, issued_at=1, expires_at=2, key_id="4ca1b490fca75c29")
         monkeypatch.setattr(ctl.license_check, "check_installed", lambda *a: lic.Status(True, info=info, activated_at=1_800_000_000))
-        monkeypatch.setattr(ctl.license_check, "machine_code", lambda: "AAAA-BBBB")
         s = make().license_summary()
-        assert s["ok"] and s["key_id"] == "4ca1b490fca75c29" and s["machine_code"] == "AAAA-BBBB"
+        assert s["ok"] and s["key_id"] == "4ca1b490fca75c29"
         assert s["activated"] == datetime.fromtimestamp(1_800_000_000).strftime("%Y-%m-%d %H:%M") and s["reason"] == ""
 
     def test_missing_activation_time_is_blank(self, make, monkeypatch):
@@ -925,24 +924,21 @@ class TestLicenseSummary:
 
         info = lic.KeyInfo(machine=b"\0" * 16, issued_at=1, expires_at=2, key_id="abc")
         monkeypatch.setattr(ctl.license_check, "check_installed", lambda *a: lic.Status(True, info=info))
-        monkeypatch.setattr(ctl.license_check, "machine_code", lambda: "AAAA")
         assert make().license_summary()["activated"] == ""
 
     def test_invalid_license_gives_reason(self, make, monkeypatch):
         from core import license as lic
 
         monkeypatch.setattr(ctl.license_check, "check_installed", lambda *a: lic.Status(False, "Giấy phép bị hỏng"))
-        monkeypatch.setattr(ctl.license_check, "machine_code", lambda: "AAAA")
         s = make().license_summary()
-        assert not s["ok"] and s["reason"] == "Giấy phép bị hỏng" and s["key_id"] == "" and s["machine_code"] == "AAAA"
+        assert not s["ok"] and s["reason"] == "Giấy phép bị hỏng" and s["key_id"] == ""
 
-    def test_machine_code_error_does_not_crash(self, make, monkeypatch):
+    def test_summary_has_no_machine_code_and_never_reads_it(self, make, monkeypatch):
+        """Mã máy không còn hiện ở Nâng cao nên tóm tắt không đọc định danh máy (không thêm đường lỗi, không tốn thời gian)."""
         from core import license as lic
 
-        def boom():
-            raise lic.LicenseError("không đọc được định danh")
-
-        monkeypatch.setattr(ctl.license_check, "check_installed", lambda *a: lic.Status(False, ""))
-        monkeypatch.setattr(ctl.license_check, "machine_code", boom)
+        calls = []
+        monkeypatch.setattr(ctl.license_check, "check_installed", lambda *a: lic.Status(False, "Chưa kích hoạt.", missing=True))
+        monkeypatch.setattr(ctl.license_check, "machine_code", lambda: calls.append(1) or "AAAA")
         s = make().license_summary()
-        assert s["machine_code"] == "" and "không đọc được định danh" in s["reason"]
+        assert "machine_code" not in s and calls == [] and s["reason"] == "Chưa kích hoạt."

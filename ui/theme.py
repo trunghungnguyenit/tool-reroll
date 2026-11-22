@@ -75,6 +75,7 @@ def stylesheet(p: Palette) -> str:
 * {{ font-family: "{FONT_FAMILY}"; font-size: 10pt; color: {p.text}; }}
 QMainWindow, QWidget#root {{ background: {p.bg}; }}
 QWidget {{ background: transparent; }}
+QDialog, QMessageBox {{ background: {p.bg}; }}
 QToolTip {{ background: {p.surface}; color: {p.text}; border: 1px solid {p.border}; padding: 4px; }}
 
 QFrame#topbar {{ background: {p.surface}; border-bottom: 1px solid {p.border}; }}

@@ -12,7 +12,7 @@ from PIL import Image
 from PySide6.QtCore import QPoint, QRect, Qt
 from PySide6.QtGui import QImage
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QMessageBox, QScrollArea, QWidget
+from PySide6.QtWidgets import QApplication, QLabel, QMessageBox, QScrollArea, QWidget
 
 import core.champions as champions
 import core.config as config
@@ -555,6 +555,82 @@ class TestTheme:
         assert w.grab().save(str(out)) and out.stat().st_size > 5000
 
 
+class TestDialogsFollowTheme:
+    """Hộp thoại (QMessageBox, hộp nhập Key) từng nền đen ở cả hai giao diện vì `QWidget { background: transparent }` áp cả cho
+    cửa sổ cấp cao: chữ theo giao diện còn nền thì không, nên giao diện Sáng cho chữ tối trên nền đen (tương phản 1,2)."""
+
+    @staticmethod
+    def _lum(h):
+        c = [int(h[i:i + 2], 16) / 255 for i in (1, 3, 5)]
+        c = [x / 12.92 if x <= 0.03928 else ((x + 0.055) / 1.055) ** 2.4 for x in c]
+        return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
+
+    def _ratio(self, a, b):
+        la, lb = sorted((self._lum(a), self._lum(b)), reverse=True)
+        return (la + 0.05) / (lb + 0.05)
+
+    @staticmethod
+    def _background(dialog):
+        """Màu (hex, alpha) tại một điểm trống sát góc của hộp thoại sau khi vẽ."""
+        dialog.show()
+        QApplication.processEvents()
+        c = dialog.grab().toImage().pixelColor(3, 3)
+        return c.name().lower(), c.alpha()
+
+    def _boxes(self, parent=None):
+        from ui import license_dialog as ld
+
+        info = QMessageBox(QMessageBox.Icon.Information, "Upload ảnh", "Chọn đúng 1 tướng (tick) rồi upload ảnh chân dung.", parent=parent)
+        warn = QMessageBox(QMessageBox.Icon.Warning, "Cấu hình", "Cấu hình đã được xử lý khi mở.", parent=parent)
+        crit = QMessageBox(QMessageBox.Icon.Critical, "Lỗi", "Không chụp được màn hình.", parent=parent)
+        lic = ld.LicenseDialog("AAAA-BBBB-CCCC-DDDD", lambda text: None, parent=parent)
+        return {"thông tin": info, "cảnh báo": warn, "lỗi": crit, "nhập Key": lic}
+
+    @pytest.mark.parametrize("p", [theme.LIGHT, theme.DARK], ids=lambda p: p.name)
+    def test_dialog_background_is_opaque_and_uses_the_theme_color(self, qtbot, p):
+        QApplication.instance().setStyleSheet(theme.stylesheet(p))
+        for name, dialog in self._boxes().items():
+            qtbot.addWidget(dialog)
+            color, alpha = self._background(dialog)
+            assert alpha == 255, f"{name}: nền trong suốt (hiện đen trên Windows)"
+            assert color == p.bg.lower(), f"{name}: nền {color}, cần {p.bg}"
+            assert self._ratio(p.text, color) >= 7, f"{name}: chữ khó đọc trên nền"
+
+    @pytest.mark.parametrize("p", [theme.LIGHT, theme.DARK], ids=lambda p: p.name)
+    def test_message_box_with_a_parent_window_gets_the_same_background(self, make_window, qtbot, p):
+        """Ứng dụng luôn mở hộp thoại với cửa sổ chính làm cha: nền phải vẫn đúng (không thừa kế kiểu trong suốt)."""
+        w = make_window(ready_config(theme=p.name))
+        for name, dialog in self._boxes(parent=w).items():
+            qtbot.addWidget(dialog)
+            color, alpha = self._background(dialog)
+            assert alpha == 255 and color == p.bg.lower(), (name, color, alpha)
+
+    def test_switching_theme_updates_dialogs_opened_afterwards(self, make_window, qtbot):
+        w = make_window(ready_config(theme="light"))
+        w.theme_box.setCurrentIndex(w.theme_box.findData("dark"))
+        box = QMessageBox(QMessageBox.Icon.Information, "x", "y", parent=w)
+        qtbot.addWidget(box)
+        assert self._background(box)[0] == theme.DARK.bg.lower()
+        w.theme_box.setCurrentIndex(w.theme_box.findData("light"))
+        box2 = QMessageBox(QMessageBox.Icon.Information, "x", "y", parent=w)
+        qtbot.addWidget(box2)
+        assert self._background(box2)[0] == theme.LIGHT.bg.lower()
+
+    @pytest.mark.parametrize("p", [theme.LIGHT, theme.DARK], ids=lambda p: p.name)
+    def test_dialog_rule_does_not_change_other_widgets(self, qtbot, p):
+        """Chỉ hộp thoại đổi: widget thường vẫn trong suốt để thấy nền thẻ/khung phía sau."""
+        QApplication.instance().setStyleSheet(theme.stylesheet(p))
+        holder = QWidget()
+        holder.setObjectName("root")
+        qtbot.addWidget(holder)
+        label = QLabel("x", holder)
+        holder.resize(80, 40)
+        holder.show()
+        QApplication.processEvents()
+        c = holder.grab().toImage().pixelColor(70, 30)  # chỗ không có label: nền của root, không phải của QLabel
+        assert c.name().lower() == p.bg.lower() and label.isVisible()
+
+
 # --------------------------------------------------------------------------- widget dùng chung
 class TestWidgets:
     def test_flow_layout_wraps_and_grows_taller_when_narrow(self, qtbot):
@@ -832,10 +908,8 @@ class TestLicenseSection:
     def patch_license(self, monkeypatch):
         from core import license as lic
 
-        state = {"status": lic.Status(True, info=lic.KeyInfo(b"\0" * 16, 1, 2, "4ca1b490fca75c29"), activated_at=1_800_000_000),
-                 "code": "5ZEN-JAHY-CSCA-HQ3D-ZV7E-KW6U-TPIM-2OHY"}
+        state = {"status": lic.Status(True, info=lic.KeyInfo(b"\0" * 16, 1, 2, "4ca1b490fca75c29"), activated_at=1_800_000_000)}
         monkeypatch.setattr(ctl.license_check, "check_installed", lambda *a: state["status"])
-        monkeypatch.setattr(ctl.license_check, "machine_code", lambda: state["code"])
         return state
 
     def open_advanced(self, w):
@@ -844,7 +918,7 @@ class TestLicenseSection:
         w.adv_toggle.setChecked(True)
         QApplication.processEvents()
 
-    def test_shows_state_key_id_activation_time_and_machine_code(self, make_window, patch_license):
+    def test_shows_state_key_id_and_activation_time(self, make_window, patch_license):
         from datetime import datetime
 
         w = make_window({"coords_version": config.COORDS_VERSION, "theme": "light"}, autoload=False)
@@ -852,16 +926,8 @@ class TestLicenseSection:
         text = w.license_state.text()
         assert text.startswith("✓ Đã kích hoạt cho máy này") and "4ca1b490fca75c29" in text
         assert datetime.fromtimestamp(1_800_000_000).strftime("%Y-%m-%d %H:%M") in text
-        assert w.machine_edit.text() == patch_license["code"] and w.machine_edit.isReadOnly()
         assert theme.LIGHT.ok in w.license_state.styleSheet()
         assert "Key" in text and len(text) < 200  # chỉ key_id, không phải chuỗi Key
-
-    def test_copy_button_copies_the_machine_code(self, make_window, patch_license):
-        w = make_window({"coords_version": config.COORDS_VERSION, "theme": "light"}, autoload=False)
-        self.open_advanced(w)
-        QApplication.clipboard().setText("")
-        w.machine_copy.click()
-        assert QApplication.clipboard().text() == patch_license["code"]
 
     def test_invalid_license_is_shown_in_fail_color(self, make_window, patch_license):
         from core import license as lic
@@ -880,9 +946,8 @@ class TestLicenseSection:
         assert "✓" in w.license_state.text()
         w.adv_toggle.setChecked(False)
         patch_license["status"] = lic.Status(False, "Giấy phép đã bị xóa")
-        patch_license["code"] = "MOI-MOI-MOI"
         w.adv_toggle.setChecked(True)
-        assert "Giấy phép đã bị xóa" in w.license_state.text() and w.machine_edit.text() == "MOI-MOI-MOI"
+        assert "Giấy phép đã bị xóa" in w.license_state.text()
 
     def test_follows_theme_color_when_theme_changes(self, make_window, patch_license):
         w = make_window({"coords_version": config.COORDS_VERSION, "theme": "light"}, autoload=False)
@@ -890,9 +955,22 @@ class TestLicenseSection:
         w.theme_box.setCurrentIndex(w.theme_box.findData("dark"))
         assert theme.DARK.ok in w.license_state.styleSheet()
 
-    def test_fits_in_compact_layout_without_clipping(self, make_window, patch_license):
+    def test_machine_code_and_copy_button_are_not_shown_in_advanced(self, make_window, patch_license, monkeypatch):
+        """Mã máy chỉ hiện ở hộp thoại nhập Key lần đầu; mục Nâng cao không có ô mã và nút Sao chép."""
+        from PySide6.QtWidgets import QLabel, QLineEdit, QToolButton
+
+        code = "5ZEN-JAHY-CSCA-HQ3D-ZV7E-KW6U-TPIM-2OHY"
+        monkeypatch.setattr(ctl.license_check, "machine_code", lambda: code)
+        for size in ((1100, 820), (460, 780)):
+            w = make_window({"coords_version": config.COORDS_VERSION, "theme": "light"}, size=size, autoload=False)
+            self.open_advanced(w)
+            assert not hasattr(w, "machine_edit") and not hasattr(w, "machine_copy")
+            texts = [x.text() for x in w.adv_body.findChildren(QLabel)] + [x.text() for x in w.adv_body.findChildren(QToolButton)]
+            texts += [x.text() for x in w.adv_body.findChildren(QLineEdit)]
+            assert not [t for t in texts if "Sao chép" in t or "Mã máy" in t or code in t], texts
+
+    def test_license_line_is_fully_visible_in_compact_layout(self, make_window, patch_license):
         w = make_window({"coords_version": config.COORDS_VERSION, "theme": "light"}, size=(460, 780), autoload=False)
         self.open_advanced(w)
-        assert w._compact and w.machine_edit.isVisible() and w.machine_copy.isVisible()
-        assert w.machine_edit.width() >= 120
-        assert w.machine_edit.fontMetrics().horizontalAdvance(w.machine_edit.text()) <= w.machine_edit.width() + 40
+        assert w._compact and w.license_state.isVisible() and w.license_state.wordWrap()
+        assert w.license_state.height() >= w.license_state.heightForWidth(w.license_state.width())  # xuống dòng, không bị cắt

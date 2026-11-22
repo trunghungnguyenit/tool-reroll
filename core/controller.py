@@ -471,21 +471,16 @@ class AppController:
 
     # ------------------------------------------------------------------ giấy phép
     def license_summary(self) -> dict:
-        """Thông tin giấy phép để hiện ở mục Nâng cao: ok, mã máy, key_id, giờ kích hoạt, lý do nếu không hợp lệ (không có chuỗi Key)."""
-        try:
-            code, code_error = license_check.machine_code(), ""
-        except license_check.LicenseError as e:
-            code, code_error = "", str(e)
+        """Thông tin giấy phép để hiện ở mục Nâng cao: ok, key_id, giờ kích hoạt, lý do nếu không hợp lệ (không có chuỗi Key)."""
         status = license_check.check_installed()
         activated = ""
         if status.activated_at:
             activated = datetime.fromtimestamp(status.activated_at).strftime("%Y-%m-%d %H:%M")
         return {
             "ok": status.ok,
-            "machine_code": code,
             "key_id": status.info.key_id if status.info else "",
             "activated": activated,
-            "reason": status.reason or code_error,
+            "reason": status.reason,
         }
 
     def last_speed_shown(self):

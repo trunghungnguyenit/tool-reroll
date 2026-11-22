@@ -98,8 +98,9 @@ Người dùng dán KEY → activate(): chữ ký Ed25519 → đúng mã máy �
 - Exe chỉ chứa **khóa công khai** (`PUBLIC_KEY_B64`): kiểm tra được chữ ký nhưng không tự tạo Key được. **Khóa riêng**
   (`private.key`) chỉ nằm trong thư mục công cụ cấp Key của người bán, ngoài repo (`.gitignore` chặn `*.key`); mất nó là không cấp
   được Key nữa, lộ nó là ai cũng cấp được Key.
-- Xem lại giấy phép: **Nâng cao → Giấy phép** hiện trạng thái (✓ đã kích hoạt / ✗ lý do), Key ID, giờ kích hoạt và **Mã máy** (nút
-  Sao chép, để xin Key mới khi cài lại Windows). Chỉ xem, không có nút xóa/nhập lại; không bao giờ hiện chuỗi Key.
+- Xem lại giấy phép: **Nâng cao → Giấy phép** hiện trạng thái (✓ đã kích hoạt / ✗ lý do), Key ID và giờ kích hoạt. Chỉ xem, không
+  có nút xóa/nhập lại; không bao giờ hiện chuỗi Key. **Mã máy không hiện ở đây**: chỉ hiện ở hộp thoại "Cần Key xác thực" khi
+  máy chưa có giấy phép hợp lệ (lần mở đầu, hoặc sau khi cài lại Windows thì hộp thoại tự hiện lại với Mã máy mới).
 - `--selftest` không cần máy đã kích hoạt: chỉ kiểm tra thư viện ký số, mã máy và DPAPI chạy được trong bản đóng gói.
 
 ### Giao diện (thư mục `ui/`)
@@ -109,7 +110,7 @@ Người dùng dán KEY → activate(): chữ ký Ed25519 → đúng mã máy �
 | `ui/main_window.py`    | Cửa sổ chính: thanh điều khiển, danh sách tướng, 'Sẵn sàng chạy?', vùng Shop, Nâng cao, Nhật ký        |
 | `ui/champion_view.py`  | Danh sách tướng dạng thẻ ảnh hoặc chữ gọn (model + delegate tự vẽ, gõ tìm kiếm không dựng lại widget)  |
 | `ui/overlay.py`        | Overlay toàn màn hình chọn vùng/5 điểm click, có kính lúp; lưu tọa độ vật lý lấy từ `GetCursorPos`     |
-| `ui/theme.py`          | Bảng màu sáng/tối (token) + stylesheet; `theme: auto` theo chế độ sáng/tối của Windows                  |
+| `ui/theme.py`          | Bảng màu sáng/tối (token) + stylesheet (kể cả nền `QDialog`/`QMessageBox`: không có rule này hộp thoại nền đen); `theme: auto` theo chế độ sáng/tối của Windows |
 | `ui/widgets.py`        | `FlowLayout` (tự xuống dòng), `Switch` (công tắc), `ElidedButton` (chữ dài cắt bằng …)                  |
 | `ui/app.py`            | Điểm vào: khóa một-bản-chạy, log, QApplication                                                        |
 
