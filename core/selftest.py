@@ -16,7 +16,7 @@ from core import config as _config
 # Phải khớp các file trong core/ (tests/test_build_files.py kiểm tra) và hiddenimports của TFT_Auto_Buy.spec.
 CORE_MODULES = (
     "core.build_info", "core.buyer", "core.capture", "core.champions", "core.config", "core.controller", "core.dpi", "core.game_window", "core.hotkey",
-    "core.license", "core.logging_setup", "core.name_matcher", "core.ocr_check", "core.ocr_pool", "core.preview", "core.scanner",
+    "core.license", "core.logging_setup", "core.monitors", "core.name_matcher", "core.ocr_check", "core.ocr_pool", "core.preview", "core.profiles", "core.scanner",
     "core.selftest", "core.single_instance",
 )
 UI_MODULES = ("ui.app", "ui.champion_view", "ui.license_dialog", "ui.main_window", "ui.overlay", "ui.theme", "ui.widgets")

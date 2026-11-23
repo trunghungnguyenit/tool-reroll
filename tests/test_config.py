@@ -150,7 +150,7 @@ def test_default_name_threshold_is_safe_and_saved_value_is_kept(data_dir):
 
 def test_new_keys_have_defaults(data_dir):
     cfg = config.load_config_with_notes()[0]
-    assert cfg["champion_locale"] == "vi_VN" and cfg["show_old_sets"] is False
+    assert cfg["champion_locale"] == "vi_VN" and cfg["season_filter"] == [] and "show_old_sets" not in cfg
 
 
 def test_normalize_custom_templates_strips_champion_name_keys(data_dir):
@@ -293,9 +293,9 @@ class TestSanitizeFixesWrongValues:
 
     # --- bool. Dùng khóa có mặc định NGƯỢC với giá trị mong đợi, nếu không từ không được hiểu vẫn "đúng" nhờ mặc định.
     @pytest.mark.parametrize("raw", ["true", "True", "YES", " on ", "1", 1, 1.0, "có", "co"])
-    def test_true_words_are_understood(self, raw):
-        assert config.DEFAULT_CONFIG["show_old_sets"] is False  # mặc định False → True chỉ đến từ việc hiểu đúng
-        assert self.run(show_old_sets=raw)[0]["show_old_sets"] is True
+    def test_true_words_are_understood(self, raw, monkeypatch):
+        monkeypatch.setitem(config.DEFAULT_CONFIG, "detect_by_image", False)  # mặc định False → True chỉ đến từ việc hiểu đúng
+        assert self.run(detect_by_image=raw)[0]["detect_by_image"] is True
 
     @pytest.mark.parametrize("raw", ["false", "False", "NO", " off ", "0", 0, 0.0, "không", "khong"])
     def test_false_words_are_understood(self, raw):
@@ -303,9 +303,10 @@ class TestSanitizeFixesWrongValues:
         assert self.run(require_game_foreground=raw)[0]["require_game_foreground"] is False
 
     @pytest.mark.parametrize("raw", ["maybe", 2, None, [], "", 0.5])
-    def test_unknown_bool_falls_back_to_default(self, raw):
-        cfg, notes = self.run(show_old_sets=raw)
-        assert cfg["show_old_sets"] is False and notes
+    def test_unknown_bool_falls_back_to_default(self, raw, monkeypatch):
+        monkeypatch.setitem(config.DEFAULT_CONFIG, "detect_by_image", False)
+        cfg, notes = self.run(detect_by_image=raw)
+        assert cfg["detect_by_image"] is False and notes
 
     # --- chuỗi, ngôn ngữ, phím
     def test_hotkey_whitespace_is_trimmed_and_noted(self):
@@ -368,6 +369,67 @@ class TestSanitizeFixesWrongValues:
     def test_empty_click_points_mean_not_set(self):
         assert self.run(slot_centers=[]) == ({**fresh(), "slot_centers": []}, [])
 
+    # --- bộ lọc mùa
+    def test_season_filter_default_is_all_seasons(self):
+        cfg, notes = self.run()
+        assert cfg["season_filter"] == [] and notes == []
+
+    def test_valid_season_filter_is_untouched(self):
+        cfg, notes = self.run(season_filter=[18, 7])
+        assert cfg["season_filter"] == [18, 7] and notes == []
+
+    def test_season_filter_is_cleaned_and_noted(self):
+        cfg, notes = self.run(season_filter=["17", 18, "x", -1, 0, True, 18])
+        assert cfg["season_filter"] == [18, 17] and "season_filter" in notes[0]
+
+    @pytest.mark.parametrize("raw,expected", [(18, [18]), ("18", [18]), (("17", 18), [18, 17])])
+    def test_single_value_or_tuple_becomes_a_list(self, raw, expected):
+        assert self.run(season_filter=raw)[0]["season_filter"] == expected
+
+    @pytest.mark.parametrize("junk", [None, {"a": 1}, {"x"}])
+    def test_season_filter_of_the_wrong_type_uses_the_default(self, junk):
+        cfg, notes = self.run(season_filter=junk)
+        assert cfg["season_filter"] == [] and "season_filter" in notes[0]
+
+    def test_old_show_old_sets_key_is_ignored_and_kept_as_an_unknown_key(self):
+        cfg, notes = self.run(show_old_sets=True)
+        assert cfg["show_old_sets"] is True and notes == [] and cfg["season_filter"] == []
+
+    # --- bộ cấu hình theo màn hình
+    PROFILE = {"name": "Màn hình 1", "monitor": {"left": 0, "top": 0, "width": 1920, "height": 1080},
+               "shop_region": {"left": 360, "top": 900, "width": 1200, "height": 160},
+               "slot_centers": [[450 + i * 230, 1000] for i in range(5)]}
+
+    def test_no_profiles_by_default(self):
+        cfg, notes = self.run()
+        assert cfg["monitor_profiles"] == {} and cfg["active_monitor"] == "" and notes == []
+
+    def test_valid_profiles_are_kept_untouched(self):
+        profiles = {"a|1920x1080": self.PROFILE, "b|2560x1440": {**self.PROFILE, "slot_centers": []}}
+        cfg, notes = self.run(monitor_profiles=profiles, active_monitor="a|1920x1080")
+        assert cfg["monitor_profiles"] == profiles and cfg["active_monitor"] == "a|1920x1080" and notes == []
+
+    def test_negative_coordinates_in_a_profile_are_fine(self):
+        left_monitor = {**self.PROFILE, "monitor": {"left": -1920, "top": 0, "width": 1920, "height": 1080},
+                        "shop_region": {"left": -1560, "top": 900, "width": 1200, "height": 160}}
+        cfg, notes = self.run(monitor_profiles={"x|1920x1080": left_monitor})
+        assert notes == [] and cfg["monitor_profiles"]["x|1920x1080"]["shop_region"]["left"] == -1560
+
+    def test_broken_profiles_are_dropped_and_good_ones_kept(self):
+        broken = {**self.PROFILE, "slot_centers": [[1, 2]]}  # 1 điểm: không phải 0 hoặc 5
+        cfg, notes = self.run(monitor_profiles={"ok|1": self.PROFILE, "bad|1": broken, "junk|1": "x", 7: self.PROFILE})
+        assert list(cfg["monitor_profiles"]) == ["ok|1"] and "bỏ 3 bộ" in notes[0] and "chọn lại" in notes[0]
+
+    @pytest.mark.parametrize("junk", [None, [], "x", 5, ["a"]])
+    def test_profiles_not_a_dict_use_the_default(self, junk):
+        cfg, notes = self.run(monitor_profiles=junk)
+        assert cfg["monitor_profiles"] == {} and "monitor_profiles" in notes[0]
+
+    @pytest.mark.parametrize("junk", [None, 5, ["a"], {"a": 1}])
+    def test_active_monitor_must_be_a_string(self, junk):
+        cfg, notes = self.run(active_monitor=junk)
+        assert cfg["active_monitor"] == "" and "active_monitor" in notes[0]
+
 
 class TestLoadEndToEnd:
     def hand_edited(self, **overrides):
@@ -422,7 +484,7 @@ class TestParseIntInRange:
 def test_locale_helpers_are_shared_with_champions():
     from core import champions
 
-    assert champions.normalize_locale is config.normalize_locale and champions.DEFAULT_LOCALE == config.DEFAULT_LOCALE
+    assert champions.normalize_locale is config.normalize_locale
 
 
 class TestRollKeyConfig:

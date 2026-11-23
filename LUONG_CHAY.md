@@ -68,9 +68,8 @@ ui/main_window.py → QTimer → controller.start_up()
   ├─► ghi 'Phiên bản: 1.0.0.N' vào Nhật ký; báo config hỏng/đã sửa; báo vùng Shop bị xóa vì đổi hệ tọa độ
   ├─► register_hotkey()          → phím F8 (thư viện keyboard, gọi về luồng giao diện qua post)
   ├─► load_champions_async()
-  │     └─► core/champions.py fetch_champion_list()   (tải 2 ngôn ngữ; playable_champions() lọc bỏ tutorial/sự kiện,
-  │           │                                          gộp trùng tên giữ mùa mới nhất; mặc định chỉ hiện mùa mới nhất)
-  │           └─► API Riot Data Dragon (internet)  → rồi fetch_portraits_async(): tải ngầm ảnh chân dung cho thẻ
+  │     └─► core/champions.py load_all_champions()   (MỌI mùa có trong Data Dragon, cả vi_VN và en_US — xem mục "Danh sách tướng")
+  │           └─► API Riot Data Dragon (internet) → rồi fetch_portraits_async(): tải ngầm ảnh chân dung của MỌI thẻ
   └─► request_preview(capture_live=False)
         └─► data/shop_capture.png (ảnh chụp sạch lần trước, nếu có và khớp kích thước vùng)
 ```
@@ -109,16 +108,30 @@ Người dùng dán KEY → activate(): chữ ký Ed25519 → đúng mã máy �
 | ---------------------- | ---------------------------------------------------------------------------------------------------- |
 | `ui/main_window.py`    | Cửa sổ chính: thanh điều khiển, danh sách tướng, 'Sẵn sàng chạy?', vùng Shop, Nâng cao, Nhật ký        |
 | `ui/champion_view.py`  | Danh sách tướng dạng thẻ ảnh hoặc chữ gọn (model + delegate tự vẽ, gõ tìm kiếm không dựng lại widget)  |
-| `ui/overlay.py`        | Overlay toàn màn hình chọn vùng/5 điểm click, có kính lúp; lưu tọa độ vật lý lấy từ `GetCursorPos`     |
+| `ui/overlay.py`        | Overlay chọn vùng / đặt 5 điểm click / xem lại trên màn hình thật; MỘT cửa sổ cho mỗi màn hình (đúng DPI từng màn hình), có kính lúp; lưu tọa độ vật lý lấy từ `GetCursorPos` |
 | `ui/theme.py`          | Bảng màu sáng/tối (token) + stylesheet (kể cả nền `QDialog`/`QMessageBox`: không có rule này hộp thoại nền đen); `theme: auto` theo chế độ sáng/tối của Windows |
 | `ui/widgets.py`        | `FlowLayout` (tự xuống dòng), `Switch` (công tắc), `ElidedButton` (chữ dài cắt bằng …)                  |
 | `ui/app.py`            | Điểm vào: khóa một-bản-chạy, log, QApplication                                                        |
 
-Bố cục tự đổi theo bề rộng (ngưỡng 900 px, vùng đệm ±40 px chống nhấp nháy): **rộng** = hai vùng cạnh nhau (Tướng | Sẵn
-sàng + Vùng Shop + Nâng cao); **hẹp** = một cột, thanh tab dưới (1·Tướng, 2·Vùng Shop, 3·Chạy), không cuộn ngang. Thanh trên
-(nút BẮT ĐẦU/DỪNG, chip: sẵn sàng/thiếu gì, số tướng, OCR, tốc độ) và khung Nhật ký luôn hiện. Nút BẮT ĐẦU luôn bấm được:
-nếu thiếu điều kiện thì nút viền đứt, bấm vào sẽ báo thiếu gì và dẫn tới đúng bước (đổi tab hoặc nháy khung). Mỗi thay đổi
-(đổi chế độ, kéo thanh, gõ tên, chọn tướng) cập nhật danh sách điều kiện ngay lập tức, không cần bấm gì thêm.
+Bố cục tự đổi theo bề rộng (ngưỡng 900 px, vùng đệm ±40 px chống nhấp nháy). Chỉ CHUYỂN widget giữa hai bố cục, không dựng
+lại nên kéo cửa sổ không giật. Nguyên tắc: **khung "Chọn tướng cần bắt" luôn được ưu tiên diện tích**.
+
+- **Rộng**: thanh trên MỘT hàng (tên | chip sẵn sàng/số tướng/OCR/tốc độ | phím + nút BẮT ĐẦU); thân là hai vùng cạnh nhau, vùng
+  Tướng chiếm mọi phần rộng thêm còn **cột phải cố định ~320 px** (kéo được trong khoảng 280–400 px).
+- **Hẹp**: tên + nút ở hàng trên, chip xuống dưới; một cột với thanh tab dưới (1·Tướng, 2·Vùng Shop, 3·Chạy), không cuộn ngang.
+- **Khung tướng**: hàng đầu = tiêu đề + đếm | ô tìm | Dạng chữ (hẹp: ô tìm xuống hàng dưới); một hàng lọc gồm chip cost, Đã chọn và
+  chip mùa cỡ nhỏ (cao ~22 px) chung hàng và tự xuống dòng; lưới thẻ tự tính số cột theo bề rộng và **chia đều phần dư cho các
+  cột** (thẻ lấp kín hàng), thanh cuộn dọc luôn hiện nên lọc/tìm không làm lưới chia lại; dưới khung chỉ còn MỘT hàng: Chọn tất cả /
+  Bỏ chọn / Upload ảnh / Tải lại + công tắc nhận diện Ảnh/Tên (OCR) + nút "Tên gõ tay ▸" (ô nhập ẩn, tự hiện nếu đã có tên gõ tay).
+- **Cột phải** gồm ba khối bấm tiêu đề để thu/mở: **Sẵn sàng chạy** (tự co thành một dòng "✓ Sẵn sàng chạy" khi đủ điều kiện, tự mở
+  liệt kê khi thiếu), **Vùng Shop và điểm click** (ba nút ① ② 👁 cùng một hàng; thu lại lúc mở app nếu đã cấu hình xong, tự mở khi
+  cấu hình hỏng/chờ xác nhận hoặc khi được dẫn tới bước đó), **Nâng cao** (mặc định đóng). Thu/mở của người dùng được giữ cho tới
+  khi trạng thái đổi; KHÔNG nhớ giữa các lần mở app.
+- **Nhật ký** ở dưới cùng, mặc định ĐÓNG: một dòng gồm tiêu đề, badge số dòng mới (cam khi có cảnh báo, đỏ khi có lỗi — phân loại
+  bằng `controller.classify_log`), dòng mới nhất, nút Sao chép (lấy toàn bộ Nhật ký kể cả khi đóng). Bấm để mở (cao 120 px, hẹp 96 px)
+  với Sao chép / Xóa / Cuộn cuối; mở ra thì badge được xóa. Có lỗi KHÔNG tự mở Nhật ký (không làm nhảy bố cục lúc đang chơi).
+- Nút BẮT ĐẦU luôn bấm được: nếu thiếu điều kiện thì nút viền đứt, bấm vào sẽ báo thiếu gì và dẫn tới đúng bước (đổi tab hoặc mở và
+  nháy khối tương ứng). Mỗi thay đổi (đổi chế độ, kéo thanh, gõ tên, chọn tướng) cập nhật danh sách điều kiện ngay lập tức.
 
 ---
 
@@ -155,28 +168,59 @@ nếu thiếu điều kiện thì nút viền đứt, bấm vào sẽ báo thi�
 
 ---
 
-## 4. Luồng cấu hình Shop (làm 1 lần)
+## 4. Luồng cấu hình Shop (làm 1 lần cho mỗi màn hình)
 
 ```
 Người dùng bấm "① Chọn vùng Shop"
   │
   └─► ui/main_window.py → _calibrate_region()
-        ├─► thu nhỏ cửa sổ, chờ Windows vẽ xong, CHỤP màn hình (mọi màn hình), hiện RegionOverlay lấy ảnh chụp làm nền
-        │     (kéo khung có kích thước trực tiếp + kính lúp; khung quá nhỏ thì bỏ và cho kéo lại; Esc hủy)
+        ├─► thu nhỏ cửa sổ, chờ Windows vẽ xong, CHỤP từng màn hình (ở độ phân giải thật) và hiện RegionOverlay:
+        │     một cửa sổ overlay cho MỖI màn hình, mỗi cửa sổ dùng ảnh chụp + hệ số DPI của chính màn hình đó
+        │     (kéo khung có kích thước trực tiếp + kính lúp; khung quá nhỏ thì bỏ và cho kéo lại; Esc hủy;
+        │      khung bị giữ trong MỘT màn hình — màn hình nơi bắt đầu kéo)
         ├─► controller.set_region(region)   → save_config() ghi shop_region (pixel VẬT LÝ từ GetCursorPos)
+        │                                      + ghi bộ của màn hình chứa vùng vào monitor_profiles
         └─► controller.request_preview()    → core/preview.py build_shop_preview() → chụp + hiện preview
 
 Người dùng bấm "② Đặt 5 điểm click"
   │
   └─► ui/main_window.py → _calibrate_clicks()        (chưa có vùng Shop thì báo và dẫn về bước ①)
         ├─► ClickOverlay: click lần lượt 5 ô, điểm ngoài vùng bị từ chối kèm thông báo, Backspace lùi 1 điểm
-        ├─► controller.set_click_points()   → save_config() ghi slot_centers (5 tọa độ)
+        ├─► controller.set_click_points()   → save_config() ghi slot_centers (5 tọa độ) + cập nhật bộ của màn hình
         └─► core/preview.py → build_shop_preview() → vẽ chấm đỏ 1→5
+
+Người dùng bấm "👁 Xem trên màn hình"
+  │
+  └─► ui/main_window.py → _view_on_screen() → controller.view_plan()
+        └─► ViewOverlay: hiện khung xanh vùng Shop + 5 chấm đỏ đánh số TRÊN MÀN HÌNH THẬT (đúng nơi tool sẽ chụp/click),
+            chặn click: click bất kỳ hoặc Esc thì đóng. Chỉ xem, không đổi gì.
+            (Màn hình chưa có bộ đã xác nhận: hiện GỢI Ý quy đổi, Enter/Space = dùng, click/Esc = bỏ qua.)
 ```
 
 **Dữ liệu lưu tại:** `data/config.json`
 
----
+### Nhiều màn hình: bộ vùng Shop riêng cho từng màn hình (`core/monitors.py`, `core/profiles.py`)
+
+Tool chạy DPI-aware nên mọi tọa độ là pixel vật lý trên desktop ảo. `core/monitors.py` liệt kê các màn hình (Win32:
+`EnumDisplayMonitors`, tên thiết bị, kích thước vật lý, % scale) và tìm màn hình đang chứa cửa sổ game. Mỗi màn hình có một **bộ**
+(vùng Shop + 5 điểm click + hình chữ nhật của màn hình lúc lưu) trong `monitor_profiles`; khóa là `tên thiết bị|RộngxCao`.
+
+```
+controller.refresh_monitor()   (lúc mở app, lúc bấm BẮT ĐẦU, khi bấm Xem trên màn hình)
+  ├─► màn hình cần dùng: chứa cửa sổ game → (game chưa chạy) màn hình đã cấu hình gần nhất → màn hình chứa vùng Shop → màn hình chính
+  ├─► đã có bộ cho màn hình đó      → dùng luôn (chỉ sắp xếp lại màn hình: dịch cả bộ theo độ lệch, chính xác)
+  ├─► chưa có bộ, nhưng có bộ khác → GỢI Ý quy đổi (không tự dùng) → trạng thái "chờ xác nhận": KHÔNG cho chạy
+  │                                    cho tới khi bấm 'Xem và xác nhận gợi ý' (Enter) hoặc chọn lại ① ②
+  └─► chưa có bộ nào                → bước ① ② như lần đầu
+```
+
+- **Quy đổi theo tỉ lệ** (`profiles.rescale`): giao diện game co giãn theo CHIỀU CAO màn hình và neo ở giữa-đáy, nên vùng được co theo
+  tỉ lệ chiều cao quanh điểm giữa-đáy (màn 21:9 giữ shop ở giữa, không bị kéo giãn), rồi kẹp vào trong màn hình mới. Đây chỉ là ƯỚC
+  LƯỢNG, vì thế luôn phải được người dùng xác nhận.
+- Đổi độ phân giải của cùng một màn hình ra khóa khác → cũng cần xác nhận. Đổi % scale của Windows (không đổi pixel vật lý) thì không đổi gì.
+- Cấu hình cũ (có `shop_region` nhưng chưa có bộ nào) tự được gắn với màn hình chứa vùng đó.
+- Game ở chế độ cửa sổ (không toàn màn hình/borderless) thì vị trí shop còn phụ thuộc vị trí cửa sổ: tool chỉ biết màn hình, không biết
+  cửa sổ nằm ở đâu trong màn hình — hãy chọn lại nếu dời cửa sổ game.
 
 ## 5. Luồng chọn tướng
 
@@ -190,9 +234,35 @@ Người dùng bấm thẻ / Space trên thẻ / gõ tên
         └─► target_names()        → gộp 2 nguồn trên (không trùng)
 ```
 
-Bộ lọc danh sách (`controller.filtered()`): tìm kiếm tức thì (tên tiếng Việt hoặc tiếng Anh), chip Cost 1g–5g (cost không
-có thì mờ), 'Đã chọn', 'Mùa cũ'; chuyển giữa thẻ có ảnh và danh sách chữ gọn bằng nút 'Dạng chữ'. Đổi bộ lọc chỉ nạp lại dữ
-liệu của model (vài chục mục), không dựng/hủy widget nào. Chọn tất cả / Bỏ chọn tác động đúng các tướng đang hiển thị.
+### Danh sách tướng: mọi mùa, hai ngôn ngữ (`core/champions.py`)
+
+Data Dragon chỉ giữ dữ liệu tướng TFT từ patch 13.x trở đi, và **mùa cũ nằm ở các patch cũ** (patch mới nhất chỉ có vài mùa gần
+đây; các patch trước 13.x trả HTTP 403). Vì vậy app quét từng patch rồi gộp lại:
+
+```
+load_all_champions(locale, on_update)        (luồng nền; mỗi bước gọi on_update để giao diện hiện sớm)
+  ├─► 1. data/champions_catalog.json (nếu có)          → hiện NGAY, dùng được cả khi offline
+  ├─► 2. versions.json → patch mới nhất (vi_VN + en_US) → hiện các mùa gần đây
+  └─► 3. các patch cũ chưa quét (từ 13.x), 8 luồng song song → bổ sung mùa cũ, lưu lại catalog
+        (lần đầu ~12 giây cho ~94 patch; các lần sau chỉ tải patch MỚI; patch lỗi mạng được thử lại lần mở sau;
+         patch HTTP 403/404 được ghi nhận là "không có dữ liệu" để không hỏi lại)
+```
+
+- **Catalog**: mỗi tướng (theo id Data Dragon) lưu tên cả hai ngôn ngữ, cost, mùa, tên ảnh và patch mới nhất chứa nó (patch mới
+  hơn luôn thắng). Ảnh dùng URL của chính patch đó nên ảnh mùa cũ vẫn tải được.
+- **Mỗi TÊN một thẻ** (`merge_champions`): tướng ở nhiều mùa chỉ hiện một thẻ, ghi mọi mùa của nó (`M18 · M17 +2`, đủ ở tooltip);
+  cost và ảnh lấy từ mùa mới nhất. Tên viết hơi khác ('RekSai' ở bản sự kiện, "Rek'Sai" ở bản mùa) được gộp. Tướng chỉ có ở tutorial/sự
+  kiện vẫn hiện ở **Tất cả**, nhãn 'Sự kiện', và biến mất khi chọn một mùa cụ thể.
+- **Chọn mùa**: thay nút 'Mùa cũ' bằng hàng chip **Tất cả · M18 · M17 …** (tự lấy từ dữ liệu nên mùa mới ra tự có chip; chọn nhiều
+  mùa được = hợp của các mùa; bỏ mùa cuối cùng thì về Tất cả). Mặc định Tất cả. Lưu ở `season_filter`.
+- **Tìm kiếm luôn tìm trong MỌI mùa**, bỏ qua chip mùa (xóa ô tìm thì chip mùa áp dụng lại). Khớp chuỗi con trên tên tiếng Việt hoặc tên
+  tiếng Anh, không phân biệt hoa/thường, dấu tiếng Việt, dấu nháy và khoảng trắng ('khazix' ra Kha'Zix). Cost và 'Đã chọn' vẫn áp dụng.
+- Lựa chọn (tick) được giữ nguyên qua mọi lần nạp lại danh sách và khi đổi chip mùa; tướng đã chọn nhưng đang bị chip mùa ẩn vẫn được bắt.
+- `data/champions_cache.json` (tên + alias cho so khớp OCR) cũng được ghi từ catalog nên chứa tên của mọi mùa.
+
+Bộ lọc danh sách (`controller.filtered()`): tìm kiếm tức thì, chip mùa, chip Cost 1g–5g (cost không có thì mờ), 'Đã chọn'; chuyển giữa
+thẻ có ảnh và danh sách chữ gọn bằng nút 'Dạng chữ'. Đổi bộ lọc chỉ nạp lại dữ liệu của model, không dựng/hủy widget nào. Chọn tất cả /
+Bỏ chọn tác động đúng các tướng đang hiển thị (kết quả tìm kiếm thì gồm cả các mùa khác).
 
 Khi bấm **Upload ảnh** (cần đúng 1 tướng được tick):
 
@@ -324,6 +394,8 @@ F8 lần nữa / bấm DỪNG / đóng cửa sổ
 | `ui/`                   | Giao diện Qt: cửa sổ chính, danh sách tướng, overlay, theme, hộp thoại nhập Key |
 | `core/license.py`       | Key ký số offline gắn mã máy, hạn nhập 24h, dùng một lần, lưu DPAPI |
 | `core/config.py`        | Đọc/ghi `data/config.json`                    |
+| `core/monitors.py`      | Liệt kê màn hình (pixel vật lý) và tìm màn hình chứa game |
+| `core/profiles.py`      | Bộ vùng Shop + điểm click theo màn hình, dịch chỗ, quy đổi tỉ lệ, chọn bộ gần nhất |
 | `core/champions.py`     | Tải danh sách tướng + ảnh từ Riot API         |
 | `core/scanner.py`       | Quét shop, nhận diện, quyết định mua          |
 | `core/buyer.py`         | Click chuột mua tướng                         |
@@ -347,7 +419,8 @@ run.bat
   → F8 tắt khi xong
 ```
 
-**Không cần chạy lại** bước cấu hình shop trừ khi đổi màn hình / độ phân giải.
+**Không cần chạy lại** bước cấu hình shop: mỗi màn hình nhớ bộ riêng và tool tự nhận màn hình đang chứa game. Chỉ khi gặp màn hình/độ
+phân giải mới thì xác nhận gợi ý quy đổi (hoặc chọn lại ① ②) một lần.
 
 ---
 
@@ -362,6 +435,7 @@ data/
 ├── config.json           ← BẮT BUỘC — đọc/ghi mỗi khi mở tool hoặc lưu cấu hình
 ├── config.json.bak       ← tự sinh: bản lưu lần trước, dùng để khôi phục khi config.json hỏng
 ├── app.log               ← tự sinh: log và lỗi (xoay vòng) — gửi file này khi cần debug
+├── champions_catalog.json ← tự sinh: mọi tướng của mọi patch đã quét (tên 2 ngôn ngữ, cost, mùa, ảnh, patch); lần sau chỉ tải patch mới, dùng được khi offline
 ├── champions_cache.json  ← tự sinh sau mỗi lần tải danh sách tướng: mọi tên (2 ngôn ngữ, mọi mùa) + cặp alias, để so OCR khi offline
 ├── templates/            ← Dùng khi bật "Bắt theo ảnh"
 │   ├── Aatrox__TFT18_Aatrox.png ← ảnh tải tự động từ Data Dragon (tên file kèm tên ảnh gốc → mỗi mùa một ảnh riêng)
@@ -386,6 +460,8 @@ mà quên ghi vào bảng này.
 | ------------------------------------ | -------------------------------------------------------------------------------------------------- |
 | `shop_region`                        | Tọa độ vùng 5 ô shop `{left, top, width, height}` (pixel vật lý); `null` = chưa chọn                |
 | `slot_centers`                       | 5 điểm click mua tướng `[[x, y], ...]`, phải nằm trong `shop_region`                                |
+| `monitor_profiles`                   | Bộ vùng Shop + 5 điểm click riêng cho từng màn hình: `{khóa màn hình: {name, monitor, shop_region, slot_centers}}` (mặc định `{}`) |
+| `active_monitor`                     | Khóa màn hình mà `shop_region`/`slot_centers` đang áp dụng (`""` = chưa gắn)                      |
 | `coords_version`                     | Hệ tọa độ của hai key trên (hiện là 2 = pixel vật lý). Config cũ không có key này thì xem bên dưới |
 | `selected_champions`                 | Tướng đã tick checkbox                                                                              |
 | `manual_names`                       | Tên tướng gõ tay (cách nhau bằng dấu phẩy hoặc xuống dòng)                                          |
@@ -404,14 +480,13 @@ mà quên ghi vào bảng này.
 | `roll_key`                           | Phím roll trong game (`d`): bấm thì app quét dày ~0,5 giây; rỗng = tắt; trùng phím bật/tắt thì bỏ qua |
 | `capture_backend`                    | Cách chụp màn hình: `auto` (thử DXGI ~1 ms/khung, tự quay về mss nếu không dùng được) hoặc `mss` (~11 ms) |
 | `champion_locale`                    | Ngôn ngữ danh sách tướng (`vi_VN` mặc định hoặc `en_US`); tên ngôn ngữ kia luôn được khớp OCR       |
-| `show_old_sets`                      | Có hiện tướng các mùa cũ trong danh sách không (ô 'Hiện mùa cũ')                                    |
+| `season_filter`                      | Các mùa đang lọc trong danh sách tướng, vd `[18, 17]` (mặc định `[]` = tất cả các mùa). Thay cho `show_old_sets` cũ (khóa cũ nếu còn trong file thì bị bỏ qua) |
 | `theme`                              | Giao diện: `auto` (theo chế độ sáng/tối của Windows), `light` hoặc `dark` (mục Nâng cao)             |
 
-**Đổi scale màn hình / config cũ → phải chọn lại vùng.** Tool chạy DPI-aware nên mọi tọa độ là pixel vật lý. Config lưu từ
-bản cũ (không có `coords_version`) có thể chứa tọa độ ở hệ ảo của scale 125%/150%, vốn lệch so với ảnh chụp và vị trí
-click. Vì vậy lúc mở, tool xóa `shop_region` và `slot_centers`, ghi `coords_version = 2`, báo một hộp thoại và nhắc bấm
-'Chọn vùng Shop' rồi 'Đặt điểm click (5 ô)'. Các key khác giữ nguyên. Nếu bạn đổi scale màn hình Windows hoặc độ phân
-giải SAU khi đã cấu hình thì tool không tự phát hiện được: hãy chọn lại hai bước trên.
+**Config cũ (không có `coords_version`) → phải chọn lại vùng.** Config lưu từ bản cũ có thể chứa tọa độ ở hệ ảo của scale
+125%/150%, vốn lệch so với ảnh chụp và vị trí click. Vì vậy lúc mở, tool xóa `shop_region` và `slot_centers`, ghi
+`coords_version = 2`, báo một hộp thoại và nhắc bấm 'Chọn vùng Shop' rồi 'Đặt 5 điểm click'. Các key khác giữ nguyên.
+Từ nay đổi màn hình/độ phân giải/cách sắp xếp màn hình KHÔNG cần làm lại từ đầu: xem mục "Nhiều màn hình" ở trên.
 
 ### Luồng đọc/ghi `data/` trong code
 

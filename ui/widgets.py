@@ -2,7 +2,7 @@
 
 from PySide6.QtCore import QPoint, QRect, QSize, Qt
 from PySide6.QtGui import QColor, QPainter, QPen
-from PySide6.QtWidgets import QCheckBox, QLayout, QPushButton, QSizePolicy, QWidgetItem
+from PySide6.QtWidgets import QCheckBox, QLabel, QLayout, QPushButton, QSizePolicy, QWidgetItem
 
 
 class FlowLayout(QLayout):
@@ -139,3 +139,30 @@ class ElidedButton(QPushButton):
     def _elide(self):
         avail = max(20, self.width() - 24)
         self.setText(self.fontMetrics().elidedText(self._full, Qt.TextElideMode.ElideRight, avail))
+
+
+class ElidedLabel(QLabel):
+    """Nhãn một dòng: chữ dài cắt bằng … theo bề rộng hiện có (toàn văn ở tooltip), không bao giờ làm bố cục rộng ra."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._full = ""
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+
+    def setFullText(self, text: str):
+        self._full = text
+        self.setToolTip(text)
+        self._elide()
+
+    def fullText(self) -> str:
+        return self._full
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._elide()
+
+    def minimumSizeHint(self):
+        return QSize(30, super().minimumSizeHint().height())
+
+    def _elide(self):
+        self.setText(self.fontMetrics().elidedText(self._full, Qt.TextElideMode.ElideRight, max(10, self.width())))

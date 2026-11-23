@@ -12,3 +12,7 @@ select = [
     "E9",  # lỗi cú pháp / IO
     "W",   # khoảng trắng thừa, escape sai trong chuỗi
 ]
+
+[lint.per-file-ignores]
+# test_layout dùng lại fixture make_window/boxes của test_ui (import vào để pytest thấy) nên tham số cùng tên không phải lỗi.
+"tests/test_layout.py" = ["F811"]

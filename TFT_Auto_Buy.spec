@@ -26,6 +26,8 @@ a = Analysis(
         "core.scanner",
         "core.buyer",
         "core.game_window",
+        "core.monitors",
+        "core.profiles",
         "core.dpi",
         "core.logging_setup",
         "core.single_instance",

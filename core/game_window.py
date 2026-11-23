@@ -26,9 +26,8 @@ _kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
 _kernel32.CloseHandle.restype = wintypes.BOOL
 
 
-def foreground_process_name() -> str | None:
-    """Tên file exe (chữ thường) của cửa sổ foreground; None nếu không đọc được."""
-    hwnd = _user32.GetForegroundWindow()
+def window_process_name(hwnd) -> str | None:
+    """Tên file exe (chữ thường) của tiến trình sở hữu cửa sổ `hwnd`; None nếu không đọc được."""
     if not hwnd:
         return None
 
@@ -48,6 +47,11 @@ def foreground_process_name() -> str | None:
         return os.path.basename(buf.value).lower()
     finally:
         _kernel32.CloseHandle(handle)
+
+
+def foreground_process_name() -> str | None:
+    """Tên file exe (chữ thường) của cửa sổ foreground; None nếu không đọc được."""
+    return window_process_name(_user32.GetForegroundWindow())
 
 
 def is_game_foreground(process_names: frozenset[str]) -> bool:
