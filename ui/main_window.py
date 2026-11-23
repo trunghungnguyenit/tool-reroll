@@ -40,8 +40,9 @@ from core.config import NUMERIC_LIMITS
 from core.single_instance import APP_TITLE
 from ui import overlay as overlay_mod
 from ui import theme
+from ui.champion_dialog import ChampionDialog
 from ui.champion_view import MODE_CARDS, MODE_TEXT, ChampionView
-from ui.widgets import ElidedButton, ElidedLabel, FlowLayout, Switch
+from ui.widgets import ElidedButton, ElidedLabel, FlowLayout, HintTextEdit, Switch
 
 COMPACT_BELOW = 900  # px: hẹp hơn thì dùng bố cục một cột
 HYSTERESIS = 40
@@ -50,6 +51,7 @@ STEP_TO_PAGE = {ctl.STEP_CHAMPIONS: PAGE_CHAMPIONS, ctl.STEP_REGION: PAGE_SHOP, 
                 ctl.STEP_SETTINGS: PAGE_RUN, ctl.STEP_OCR: PAGE_RUN}
 MAX_LOG_LINES = 500
 RIGHT_W = 320  # cột phải (bố cục rộng): hẹp cố định để khung chọn tướng chiếm phần còn lại
+MANUAL_BOX_HEIGHT = 100  # px: ô tên gõ tay cao cỡ 4 dòng (trước đây 44 px chỉ vừa một dòng nên chữ gõ dài bị khuất)
 LOG_OPEN_H, LOG_OPEN_H_COMPACT = 120, 96
 
 
@@ -140,6 +142,7 @@ class MainWindow(QMainWindow):
         self._compact: bool | None = None
         self._mode_pref = "auto"
         self.palette_ = theme.LIGHT
+        self._detail_dialog: ChampionDialog | None = None  # hộp thoại chi tiết tướng đang mở (tối đa một)
         self.c = make_controller(self.on_event, self._poster.post)
         self._mode_pref = self.c.config.get("theme", "auto") if self.c.config.get("theme") in ("auto", "light", "dark") else "auto"
 
@@ -336,6 +339,7 @@ class MainWindow(QMainWindow):
         self.view = ChampionView(self.c, self.palette_)
         self.view.setMinimumHeight(110)
         self.view.toggled.connect(lambda *_: None)
+        self.view.detail_requested.connect(self._open_detail)
         lay.addWidget(self.view, 1)
 
         # Một hàng dưới khung: thao tác chọn + cách nhận diện (2 công tắc) + ô tên gõ tay ẩn sau nút
@@ -362,9 +366,9 @@ class MainWindow(QMainWindow):
         self.manual_btn.toggled.connect(self._toggle_manual)
         actions.addWidget(self.manual_btn)
         lay.addLayout(actions)
-        self.manual = QPlainTextEdit()
+        self.manual = HintTextEdit()  # không dùng QPlainTextEdit thường: chữ đang gõ bằng Telex/IME bị đè lên placeholder
         self.manual.setPlaceholderText("Tên gõ tay cho OCR (phẩy hoặc xuống dòng), vd: Aatrox, Yasuo, Jinx")
-        self.manual.setFixedHeight(44)
+        self.manual.setFixedHeight(MANUAL_BOX_HEIGHT)
         self.manual.setAccessibleName("Tên tướng gõ tay")
         self.manual.textChanged.connect(self._on_manual_changed)
         self.manual.setVisible(False)
@@ -744,6 +748,8 @@ class MainWindow(QMainWindow):
         self.palette_ = theme.pick(self._mode_pref)
         QApplication.instance().setStyleSheet(theme.stylesheet(self.palette_))
         self.view.set_palette(self.palette_)
+        if self._detail_dialog is not None:
+            self._detail_dialog.set_palette(self.palette_)
         if hasattr(self, "license_state"):  # lần gọi đầu (trong __init__) thì mục Nâng cao chưa dựng
             self._refresh_license()
         for sw in (self.sw_image, self.sw_name):
@@ -1025,6 +1031,31 @@ class MainWindow(QMainWindow):
 
     def _ev_portrait_ready(self, name):
         self.view.champion_model.refresh_name(name)
+        if self._detail_dialog is not None and self._detail_dialog.champion_name == name:
+            self._detail_dialog.refresh_portrait()
+
+    # ------------------------------------------------------------------ chi tiết tướng
+    def _open_detail(self, name: str):
+        """Mở hộp thoại chi tiết của tướng (thay hộp đang mở nếu có) và bắt đầu tải dữ liệu chi tiết nếu chưa có."""
+        champ = next((c for c in self.c.champions if c["name"] == name), None)
+        if champ is None:
+            return
+        if self._detail_dialog is not None:
+            self._detail_dialog.close()
+        self.c.request_details()
+        dialog = ChampionDialog(self.c, champ, self.palette_, self)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        dialog.destroyed.connect(lambda _=None, d=dialog: self._detail_closed(d))
+        self._detail_dialog = dialog
+        dialog.show()
+
+    def _detail_closed(self, dialog):
+        if self._detail_dialog is dialog:
+            self._detail_dialog = None
+
+    def _ev_details_changed(self):
+        if self._detail_dialog is not None:
+            self._detail_dialog.refresh()
 
     def _ev_preview_busy(self, busy):
         self.refresh_btn.setEnabled(not busy)

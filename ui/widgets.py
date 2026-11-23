@@ -1,8 +1,9 @@
-"""Widget dùng chung: FlowLayout (tự xuống dòng khi hẹp), Switch (công tắc), ElidedButton (chữ dài tự cắt bằng …)."""
+"""Widget dùng chung: FlowLayout (tự xuống dòng khi hẹp), Switch (công tắc), ElidedButton (chữ dài tự cắt bằng …), HintTextEdit (ô nhập
+nhiều dòng có chữ gợi ý, không bị chữ đang gõ bằng bộ gõ đè lên)."""
 
 from PySide6.QtCore import QPoint, QRect, QSize, Qt
 from PySide6.QtGui import QColor, QPainter, QPen
-from PySide6.QtWidgets import QCheckBox, QLabel, QLayout, QPushButton, QSizePolicy, QWidgetItem
+from PySide6.QtWidgets import QCheckBox, QLabel, QLayout, QPlainTextEdit, QPushButton, QSizePolicy, QWidgetItem
 
 
 class FlowLayout(QLayout):
@@ -139,6 +140,23 @@ class ElidedButton(QPushButton):
     def _elide(self):
         avail = max(20, self.width() - 24)
         self.setText(self.fontMetrics().elidedText(self._full, Qt.TextElideMode.ElideRight, avail))
+
+
+class HintTextEdit(QPlainTextEdit):
+    """QPlainTextEdit có chữ gợi ý (placeholder) nhưng chữ gõ dở không bị đè lên nó. Khi bộ gõ (Telex/IME) đang soạn chữ chưa chốt, tài
+    liệu vẫn rỗng nên Qt vẫn vẽ placeholder ngay bên dưới chữ đang soạn; ở đây ẩn placeholder suốt lúc có chữ đang soạn."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._hint = ""
+
+    def setPlaceholderText(self, text):
+        self._hint = text
+        super().setPlaceholderText(text)
+
+    def inputMethodEvent(self, event):
+        super().inputMethodEvent(event)
+        super().setPlaceholderText("" if event.preeditString() else self._hint)
 
 
 class ElidedLabel(QLabel):

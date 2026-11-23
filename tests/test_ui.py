@@ -3,6 +3,7 @@ bố cục thích ứng, tràn ngang, chủ đề sáng/tối và chụp ảnh g
 được thay bằng bản giả; không có thao tác nào chạm vào chuột/màn hình thật."""
 
 import json
+import threading
 import types
 
 import cv2
@@ -10,9 +11,9 @@ import numpy as np
 import pytest
 from PIL import Image
 from PySide6.QtCore import QPoint, Qt
-from PySide6.QtGui import QImage
+from PySide6.QtGui import QImage, QInputMethodEvent
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QLabel, QMessageBox, QScrollArea, QWidget
+from PySide6.QtWidgets import QApplication, QLabel, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QWidget
 
 import core.champions as champions
 import core.config as config
@@ -20,13 +21,13 @@ import core.controller as ctl
 import core.monitors as monitors_mod
 from core.monitors import Monitor
 from core.preview import PreviewResult
-from tests.fakes import BAD_OCR, ENTRIES, OK_OCR, FakeScanner, champ, fake_loader
+from tests.fakes import BAD_OCR, ENTRIES, OK_OCR, FakeScanner, champ, detail_entry, fake_details, fake_loader
 from ui import main_window as mw
 from tests.overlay_fakes import Cursor, drag, one_screen
 from ui import overlay as ov
 from ui import theme
-from ui.champion_view import MODE_CARDS, MODE_TEXT
-from ui.widgets import ElidedButton, FlowLayout, Switch
+from ui.champion_view import MODE_CARDS, MODE_TEXT, info_rect, inner_card_rect
+from ui.widgets import ElidedButton, FlowLayout, HintTextEdit, Switch
 
 
 class Boxes:
@@ -47,6 +48,7 @@ def make_window(qtbot, data_dir, monkeypatch, boxes):
     FakeScanner.instances = []
     monkeypatch.setattr(ctl, "load_all_champions", fake_loader(ENTRIES))
     monkeypatch.setattr(ctl, "download_template", lambda n, u: None)
+    monkeypatch.setattr(ctl, "get_details", fake_details())  # không ra mạng thật khi mở chi tiết tướng
     monkeypatch.setattr(ctl, "build_shop_preview", lambda *a, **k: PreviewResult(None, False, ""))
     kb = types.SimpleNamespace(add_hotkey=lambda *a, **k: None, unhook_all=lambda: None)
     created = []
@@ -1092,3 +1094,220 @@ class TestLicenseSection:
         self.open_advanced(w)
         assert w._compact and w.license_state.isVisible() and w.license_state.wordWrap()
         assert w.license_state.height() >= w.license_state.heightForWidth(w.license_state.width())  # xuống dòng, không bị cắt
+
+
+# --------------------------------------------------------------------------- ô tên gõ tay: chữ gõ dở không bị đè, ô đủ to
+def _preedit(widget, text):
+    QApplication.sendEvent(widget, QInputMethodEvent(text, []))
+    QApplication.processEvents()
+
+
+def _commit(widget, text):
+    ev = QInputMethodEvent()
+    ev.setCommitString(text)
+    QApplication.sendEvent(widget, ev)
+    QApplication.processEvents()
+
+
+HINT = "Tên gõ tay cho OCR (phẩy hoặc xuống dòng), vd: Aatrox, Yasuo, Jinx"
+
+
+class TestManualNamesBox:
+    def open_box(self, window):
+        window.manual_btn.setChecked(True)
+        QApplication.processEvents()
+        return window.manual
+
+    def test_box_is_tall_enough_for_several_lines(self, window):
+        box = self.open_box(window)
+        assert isinstance(box, HintTextEdit) and box.height() >= 96 and box.isVisible()
+        assert box.placeholderText().startswith("Tên gõ tay cho OCR")
+
+    def test_placeholder_hides_while_the_input_method_is_composing_and_returns_after(self, window):
+        box = self.open_box(window)
+        hint = box.placeholderText()
+        _preedit(box, "yasuo")  # chữ đang soạn của Telex/IME: tài liệu vẫn rỗng
+        assert box.toPlainText() == "" and box.placeholderText() == ""
+        _preedit(box, "")  # hủy soạn
+        assert box.placeholderText() == hint
+
+    def test_committing_text_restores_the_hint_and_keeps_the_text(self, window):
+        box = self.open_box(window)
+        hint = box.placeholderText()
+        _preedit(box, "yasuo")
+        _commit(box, "yasuo")
+        assert box.toPlainText() == "yasuo" and box.placeholderText() == hint
+        assert window.c.manual_names == "yasuo"
+
+    @staticmethod
+    def render_while_composing(qtbot, cls, with_hint):
+        w = cls()
+        if with_hint:
+            w.setPlaceholderText(HINT)
+        w.setFixedSize(800, 44)
+        qtbot.addWidget(w)
+        w.show()
+        qtbot.waitExposed(w)
+        _preedit(w, "yasuo")
+        return w.viewport().grab().toImage()
+
+    @staticmethod
+    def differing_pixels(a, b, from_x=150):
+        return sum(1 for y in range(a.height()) for x in range(from_x, a.width()) if a.pixel(x, y) != b.pixel(x, y))
+
+    def test_composing_text_is_not_painted_over_the_hint(self, qtbot):
+        """Cái người dùng thấy: so với ô không có placeholder, bên phải chữ đang soạn không được còn nét chữ nào của placeholder."""
+        with_hint = self.render_while_composing(qtbot, HintTextEdit, True)
+        without = self.render_while_composing(qtbot, HintTextEdit, False)
+        assert self.differing_pixels(with_hint, without) == 0
+
+    def test_plain_qplaintextedit_really_has_the_bug(self, qtbot):
+        """Chứng minh phép đo ở trên bắt được lỗi: QPlainTextEdit thường vẫn vẽ placeholder dưới chữ đang soạn."""
+        with_hint = self.render_while_composing(qtbot, QPlainTextEdit, True)
+        without = self.render_while_composing(qtbot, QPlainTextEdit, False)
+        assert self.differing_pixels(with_hint, without) > 0
+
+
+# --------------------------------------------------------------------------- chi tiết tướng
+def info_pos(view, name):
+    for row, c in enumerate(view.champion_model.items()):
+        if c["name"] == name:
+            return info_rect(inner_card_rect(view.visualRect(view.champion_model.index(row)))).center().toPoint()
+    raise AssertionError(f"{name} không có trong danh sách đang hiện")
+
+
+def dialog_texts(dialog):
+    return [lb.text() for lb in dialog.findChildren(QLabel)]
+
+
+class TestChampionDetailDialog:
+    def open_by_badge(self, qtbot, window, name):
+        qtbot.mouseClick(window.view.viewport(), Qt.MouseButton.LeftButton, pos=info_pos(window.view, name))
+        qtbot.waitUntil(lambda: window._detail_dialog is not None, timeout=2000)
+        return window._detail_dialog
+
+    def test_info_badge_opens_details_without_changing_the_selection(self, window, qtbot):
+        assert not window.c.is_selected("Zed")
+        dialog = self.open_by_badge(qtbot, window, "Zed")
+        assert dialog.champion_name == "Zed" and not window.c.is_selected("Zed")
+        assert window.c.is_selected("Vex")  # tướng đã chọn từ trước không bị đụng tới
+
+    def test_clicking_elsewhere_on_the_card_still_toggles_and_opens_nothing(self, window, qtbot):
+        click_card(qtbot, window, "Zed")
+        assert window.c.is_selected("Zed") and window._detail_dialog is None
+
+    def test_right_click_opens_details_without_toggling(self, window, qtbot):
+        qtbot.mouseClick(window.view.viewport(), Qt.MouseButton.RightButton, pos=card_center(window.view, "Vex"))
+        qtbot.waitUntil(lambda: window._detail_dialog is not None, timeout=2000)
+        assert window._detail_dialog.champion_name == "Vex" and window.c.is_selected("Vex")
+
+    def test_key_i_opens_details_of_the_current_card(self, window, qtbot):
+        view = window.view
+        view.setFocus()
+        row = next(i for i, c in enumerate(view.champion_model.items()) if c["name"] == "Jinx")
+        view.setCurrentIndex(view.champion_model.index(row))
+        qtbot.keyClick(view, Qt.Key.Key_I)
+        qtbot.waitUntil(lambda: window._detail_dialog is not None, timeout=2000)
+        assert window._detail_dialog.champion_name == "Jinx"
+
+    def test_text_mode_has_no_badge_but_right_click_works(self, window, qtbot):
+        window.view.set_mode(MODE_TEXT)
+        QApplication.processEvents()
+        click_card(qtbot, window, "Zed")  # ở dạng chữ không có nút ⓘ: bấm đâu cũng là chọn
+        assert window.c.is_selected("Zed") and window._detail_dialog is None
+        qtbot.mouseClick(window.view.viewport(), Qt.MouseButton.RightButton, pos=card_center(window.view, "Zed"))
+        qtbot.waitUntil(lambda: window._detail_dialog is not None, timeout=2000)
+
+    def test_shows_role_traits_stats_and_ability(self, window, qtbot):
+        dialog = self.open_by_badge(qtbot, window, "Vex")
+        qtbot.waitUntil(lambda: "Pháp sư (phép)" in dialog_texts(dialog), timeout=3000)
+        texts = dialog_texts(dialog)
+        assert "Vex" in texts and "1 gold · mùa 18" in texts
+        assert "Mê Hoặc" in texts  # hệ
+        assert "Máu" in texts and "650" in texts and "Tầm đánh" in texts and "1 ô" in texts and "25%" in texts
+        assert "Kỹ năng: Chiêu của Vex" in texts and "Gây sát thương lên mục tiêu." in texts
+        assert not any("[?]" in t for t in texts)  # mô tả đủ số: không có ghi chú thiếu số
+        assert any(t.startswith("Dữ liệu mùa 18") for t in texts)
+
+    def test_incomplete_description_explains_the_missing_numbers(self, window, qtbot):
+        dialog = self.open_by_badge(qtbot, window, "Zed")
+        qtbot.waitUntil(lambda: any("[?]" in t for t in dialog_texts(dialog)), timeout=3000)
+        texts = dialog_texts(dialog)
+        assert "Gây [?] sát thương." in texts
+        assert any("Riot không công bố" in t for t in texts)
+        assert "Sát thủ (vật lý)" in texts
+
+    def test_champion_without_details_says_so(self, window, qtbot):
+        dialog = self.open_by_badge(qtbot, window, "Ahri")
+        qtbot.waitUntil(lambda: any("không có chi tiết" in t for t in dialog_texts(dialog)), timeout=3000)
+
+    def test_shows_loading_first_then_fills_in_by_itself(self, window, qtbot, monkeypatch):
+        release = threading.Event()
+        inner = fake_details()
+
+        def slow(locale):
+            release.wait(5)
+            return inner(locale)
+
+        monkeypatch.setattr(ctl, "get_details", slow)
+        dialog = self.open_by_badge(qtbot, window, "Vex")
+        assert any("Đang tải" in t for t in dialog_texts(dialog))
+        release.set()
+        qtbot.waitUntil(lambda: "Mê Hoặc" in dialog_texts(dialog), timeout=3000)
+        assert not any("Đang tải" in t for t in dialog_texts(dialog))
+
+    def test_download_error_offers_retry_that_works(self, window, qtbot, monkeypatch):
+        monkeypatch.setattr(ctl, "get_details", fake_details(fail=ConnectionError("mất mạng")))
+        dialog = self.open_by_badge(qtbot, window, "Vex")
+        qtbot.waitUntil(lambda: any("mất mạng" in t for t in dialog_texts(dialog)), timeout=3000)
+        retry = dialog.findChild(QPushButton, "retry_details")
+        assert retry is not None
+        monkeypatch.setattr(ctl, "get_details", fake_details())
+        qtbot.mouseClick(retry, Qt.MouseButton.LeftButton)
+        qtbot.waitUntil(lambda: "Mê Hoặc" in dialog_texts(dialog), timeout=3000)
+        assert dialog.findChild(QPushButton, "retry_details") is None
+
+    def test_offline_data_is_labelled(self, window, qtbot, monkeypatch):
+        monkeypatch.setattr(ctl, "get_details", fake_details(offline=True))
+        dialog = self.open_by_badge(qtbot, window, "Vex")
+        qtbot.waitUntil(lambda: any("đang dùng bản đã lưu" in t for t in dialog_texts(dialog)), timeout=3000)
+
+    def test_data_from_the_web_is_never_rendered_as_html(self, window, qtbot, monkeypatch):
+        evil = detail_entry("Vex", traits=("<b>Hệ</b>",), desc="<h1>to</h1> <script>x</script>")
+        monkeypatch.setattr(ctl, "get_details", fake_details(catalog={"vex": evil}))
+        dialog = self.open_by_badge(qtbot, window, "Vex")
+        qtbot.waitUntil(lambda: "<b>Hệ</b>" in dialog_texts(dialog), timeout=3000)
+        label = dialog.findChild(QLabel, "ability_desc")
+        assert label.text() == "<h1>to</h1> <script>x</script>" and label.textFormat() == Qt.TextFormat.PlainText
+
+    def test_opening_another_champion_replaces_the_dialog(self, window, qtbot):
+        first = self.open_by_badge(qtbot, window, "Vex")
+        qtbot.mouseClick(window.view.viewport(), Qt.MouseButton.LeftButton, pos=info_pos(window.view, "Zed"))
+        qtbot.waitUntil(lambda: window._detail_dialog is not first, timeout=2000)
+        assert window._detail_dialog.champion_name == "Zed"
+        qtbot.waitUntil(lambda: not first.isVisible(), timeout=2000)
+
+    def test_closing_forgets_the_dialog(self, window, qtbot):
+        dialog = self.open_by_badge(qtbot, window, "Vex")
+        dialog.close()
+        qtbot.waitUntil(lambda: window._detail_dialog is None, timeout=2000)
+
+    def test_dialog_follows_the_theme(self, window, qtbot):
+        dialog = self.open_by_badge(qtbot, window, "Vex")
+        window._mode_pref = "dark"
+        window._apply_theme()
+        assert dialog._p is theme.DARK
+
+    def test_portrait_arrives_later_and_replaces_the_letter(self, window, qtbot, data_dir):
+        dialog = self.open_by_badge(qtbot, window, "Vex")
+        assert dialog.portrait.text() == "V" and dialog.portrait.pixmap().isNull()
+        vex = next(c for c in window.c.champions if c["name"] == "Vex")
+        path = champions.template_path("Vex", vex["image_url"])
+        path.parent.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(path), np.full((80, 80, 3), 200, np.uint8))
+        window._ev_portrait_ready("Vex")
+        assert dialog.portrait.text() == "" and not dialog.portrait.pixmap().isNull()
+
+    def test_tooltip_tells_how_to_open_details(self, window):
+        idx = window.view.champion_model.index(0)
+        assert "ⓘ" in idx.data(Qt.ItemDataRole.ToolTipRole)

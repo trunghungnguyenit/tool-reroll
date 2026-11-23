@@ -15,11 +15,11 @@ from core import config as _config
 
 # Phải khớp các file trong core/ (tests/test_build_files.py kiểm tra) và hiddenimports của TFT_Auto_Buy.spec.
 CORE_MODULES = (
-    "core.build_info", "core.buyer", "core.capture", "core.champions", "core.config", "core.controller", "core.dpi", "core.game_window", "core.hotkey",
+    "core.build_info", "core.buyer", "core.capture", "core.champion_details", "core.champions", "core.config", "core.controller", "core.dpi", "core.game_window", "core.hotkey",
     "core.license", "core.logging_setup", "core.monitors", "core.name_matcher", "core.ocr_check", "core.ocr_pool", "core.preview", "core.profiles", "core.scanner",
     "core.selftest", "core.single_instance",
 )
-UI_MODULES = ("ui.app", "ui.champion_view", "ui.license_dialog", "ui.main_window", "ui.overlay", "ui.theme", "ui.widgets")
+UI_MODULES = ("ui.app", "ui.champion_dialog", "ui.champion_view", "ui.license_dialog", "ui.main_window", "ui.overlay", "ui.theme", "ui.widgets")
 THIRD_PARTY = (
     "PySide6.QtCore", "PySide6.QtGui", "PySide6.QtWidgets", "PIL.Image", "cv2", "numpy", "mss", "keyboard", "requests",
     "winocr", "winrt.windows.media.ocr", "dxcam", "comtypes", "nacl.signing",

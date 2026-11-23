@@ -59,3 +59,29 @@ def fake_loader(entries, report=None, fail=None):
         return report or LoadReport(versions_total=1, versions_new=1)
 
     return loader
+
+
+def detail_entry(name, set_no=18, cost=1, role="ADFighter", traits=("Đấu Sĩ", "Thợ Săn"), complete=True, desc="Gây sát thương lên mục tiêu."):
+    return {"name": name, "set": set_no, "cost": cost, "role": role, "traits": list(traits),
+            "stats": {"hp": 650.0, "damage": 40.0, "armor": 35.0, "magicResist": 35.0, "attackSpeed": 0.75, "range": 1.0,
+                      "initialMana": 0.0, "mana": 40.0, "critChance": 0.25},
+            "ability": {"name": f"Chiêu của {name}", "desc": desc, "complete": complete}}
+
+
+# Chi tiết giả khớp ENTRIES: Vex đủ số, Zed thiếu số trong mô tả, các tướng khác không có (như tướng mùa cũ).
+DETAILS = {"vex": detail_entry("Vex", role="APCaster", traits=("Mê Hoặc",)),
+           "zed": detail_entry("Zed", role="ADReaper", complete=False, desc="Gây [?] sát thương.")}
+
+
+def fake_details(catalog=None, offline=False, fail=None, calls=None):
+    """Thay core.controller.get_details: không mạng. `calls` (nếu có) ghi lại locale mỗi lần được gọi."""
+    from core.champion_details import Details
+
+    def get(locale, *a, **k):
+        if calls is not None:
+            calls.append(locale)
+        if fail is not None:
+            raise fail
+        return Details(DETAILS if catalog is None else catalog, offline=offline)
+
+    return get

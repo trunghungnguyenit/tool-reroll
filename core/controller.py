@@ -16,7 +16,9 @@ from core import license as license_check
 from core import monitors as monitors_mod
 from core import profiles as profiles_mod
 from core.build_info import app_version
+from core.champion_details import find_detail, get_details
 from core.champions import (
+    PORTRAIT_WORKERS,
     alias_groups,
     aliases_for_targets,
     available_seasons,
@@ -28,6 +30,7 @@ from core.champions import (
     merge_champions,
     normalize_locale,
     reference_names,
+    run_parallel,
     save_champion_cache,
     save_custom_template,
     selection_keys,
@@ -155,6 +158,10 @@ class AppController:
         self._portraits_running = False
         self._portraits_again = False  # danh sách được bổ sung khi luồng tải ảnh đang chạy: quét lại phần còn thiếu
         self._portraits_lock = threading.Lock()
+        self.details: dict[str, dict] | None = None  # chi tiết tướng (chỉ số, kỹ năng, hệ) khi đã tải; None = chưa có
+        self.details_offline = False  # đang dùng bản chi tiết đã lưu vì không tải mới được
+        self.details_error = ""  # lý do lần tải gần nhất thất bại (rỗng nếu không lỗi)
+        self.loading_details = False
         self.closing = False
         self.ocr_status: OcrStatus | None = None
         self.ocr_summary = ""
@@ -578,18 +585,69 @@ class AppController:
                             self._portraits_running = False
                             released = True
                         return
-                    for c in todo:
-                        if self.closing:
-                            return
-                        tried.add(c["name"])
+                    tried.update(c["name"] for c in todo)
+
+                    def fetch(c):
                         if download_template(c["name"], c["image_url"]):
                             self._post_safe(lambda n=c["name"]: self.notify("portrait_ready", name=n))
+
+                    # Song song (tải lần lượt 237 ảnh mất gần 3 phút); mùa mới nhất nằm đầu danh sách nên được tải trước.
+                    run_parallel(todo, fetch, PORTRAIT_WORKERS, should_stop=lambda: self.closing)
             finally:
                 if not released:
                     with self._portraits_lock:
                         self._portraits_running = False
 
         threading.Thread(target=work, daemon=True).start()
+
+    # ------------------------------------------------------------------ chi tiết tướng
+    def request_details(self, force: bool = False):
+        """Bắt đầu tải chi tiết tướng ở luồng nền (chỉ làm một lần: đã có dữ liệu hoặc đang tải thì bỏ qua; force=True để thử lại sau
+        lỗi). Xong thì báo sự kiện details_changed; giao diện đọc kết quả bằng detail_for()/details_state()."""
+        if self.loading_details or (self.details is not None and not force):
+            return
+        self.loading_details = True
+        self.details_error = ""
+        locale = normalize_locale(self.config.get("champion_locale"))
+
+        def work():
+            try:
+                result = get_details(locale)
+            except Exception as e:
+                msg = f"{type(e).__name__}: {e}"
+                self._post_safe(lambda: self._details_failed(msg))
+                return
+            self._post_safe(lambda: self._details_loaded(result))
+
+        threading.Thread(target=work, daemon=True).start()
+        self.notify("details_changed")
+
+    def _details_loaded(self, result):
+        self.loading_details = False
+        self.details = result.champions
+        self.details_offline = result.offline
+        self.details_error = ""
+        if result.offline:
+            self.log("Không tải được chi tiết tướng mới: đang dùng bản đã lưu ở lần trước.")
+        self.notify("details_changed")
+
+    def _details_failed(self, msg: str):
+        self.loading_details = False
+        self.details_error = msg
+        self.log(f"Không tải được chi tiết tướng: {msg}")
+        self.notify("details_changed")
+
+    def details_state(self) -> str:
+        """'ready' (đã có dữ liệu), 'loading' (đang tải), 'error' (tải lỗi, chưa có gì) hoặc 'idle' (chưa yêu cầu)."""
+        if self.details is not None:
+            return "ready"
+        if self.loading_details:
+            return "loading"
+        return "error" if self.details_error else "idle"
+
+    def detail_for(self, champ: dict) -> dict | None:
+        """Chi tiết của một thẻ tướng; None nếu chưa tải xong hoặc nguồn không có tướng này (vd mùa cũ/sự kiện)."""
+        return find_detail(self.details, champ)
 
     def upload_template(self, name: str, src_path: str):
         """Lưu ảnh upload cho một tướng. Ném ValueError/OSError nếu file không dùng được (giao diện báo)."""

@@ -1,7 +1,7 @@
 """Danh sách tướng: model + delegate tự vẽ. Chỉ giữ dữ liệu của các mục đang lọc; bật/tắt chọn chỉ báo `dataChanged` cho
 đúng mục đó, đổi bộ lọc thì reset model (vài chục mục, rất nhẹ) nên gõ tìm kiếm không dựng/hủy widget nào."""
 
-from PySide6.QtCore import QAbstractListModel, QModelIndex, QRect, QRectF, QSize, Qt, Signal
+from PySide6.QtCore import QAbstractListModel, QModelIndex, QPointF, QRect, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QAbstractItemView, QListView, QStyle, QStyledItemDelegate
 
@@ -10,9 +10,19 @@ from ui.theme import Palette, qcolor
 
 CARD_W, CARD_H = 104, 140
 ROW_H = 34
+INFO_SIZE = 18  # nút ⓘ (xem chi tiết) ở góc trái trên của thẻ
 MODE_CARDS, MODE_TEXT = "cards", "text"
 
 ChampionRole = Qt.ItemDataRole.UserRole + 1
+
+
+def info_rect(card: QRectF) -> QRectF:
+    """Ô nút ⓘ trong thẻ; `card` là khung thẻ đã thu vào 4 px (đúng khung delegate dùng để vẽ)."""
+    return QRectF(card.left() + 4, card.top() + 4, INFO_SIZE, INFO_SIZE)
+
+
+def inner_card_rect(visual: QRect) -> QRectF:
+    return QRectF(visual).adjusted(4, 4, -4, -4)
 
 
 class ChampionModel(QAbstractListModel):
@@ -46,7 +56,7 @@ class ChampionModel(QAbstractListModel):
         if role == Qt.ItemDataRole.ToolTipRole:
             alt = champ.get("alt_name")
             extra = f" ({alt})" if alt and alt != champ["name"] else ""
-            return f"{champ['name']}{extra} — {champ['tier']} gold, {season_tooltip(champ)}"
+            return f"{champ['name']}{extra} — {champ['tier']} gold, {season_tooltip(champ)}\nChuột phải hoặc bấm ⓘ: xem chỉ số, kỹ năng, hệ"
         if role == Qt.ItemDataRole.AccessibleTextRole:
             state = "đã chọn" if self._c.is_selected(champ["name"]) else "chưa chọn"
             return f"{champ['name']}, {champ['tier']} gold, {season_tooltip(champ)}, {state}"
@@ -103,7 +113,7 @@ class ChampionDelegate(QStyledItemDelegate):
         cost_color = QColor(p.cost[max(0, min(4, champ["tier"] - 1))])
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        rect = QRectF(option.rect).adjusted(4, 4, -4, -4)
+        rect = inner_card_rect(option.rect)
         bg = qcolor(p.accent_soft) if selected else qcolor(p.surface)
         border = QColor(p.accent_line) if selected else QColor(p.accent_line if hover else p.border)
         painter.setBrush(bg)
@@ -161,6 +171,20 @@ class ChampionDelegate(QStyledItemDelegate):
                          champ["name"])
         if selected:
             self._badge(painter, QRectF(rect.right() - 22, rect.top() + 4, 18, 18))
+        self._info_badge(painter, info_rect(rect))
+
+    def _info_badge(self, painter, r: QRectF):
+        """Nút ⓘ: vòng tròn nền thẻ + chữ i, vẽ đè lên góc ảnh nên luôn nhìn rõ."""
+        p = self.palette_
+        painter.setBrush(qcolor(p.surface))
+        painter.setPen(QPen(QColor(p.muted), 1))
+        painter.drawEllipse(r)
+        f = QFont(painter.font())
+        f.setPointSize(8)
+        f.setBold(True)
+        painter.setFont(f)
+        painter.setPen(QColor(p.muted))
+        painter.drawText(r, Qt.AlignmentFlag.AlignCenter, "i")
 
     def _row_text_rect(self, rect):
         return QRectF(rect.left() + 34, rect.top(), max(60, rect.width() - 190), rect.height())
@@ -206,6 +230,7 @@ class ChampionView(QListView):
     """Một lần bấm/Space/Enter đổi trạng thái chọn của mục; hỗ trợ bàn phím (mũi tên, Space)."""
 
     toggled = Signal(str, bool)
+    detail_requested = Signal(str)  # tên tướng: người dùng muốn xem chi tiết (nút ⓘ, chuột phải hoặc phím I)
 
     def __init__(self, controller, palette: Palette, parent=None):
         super().__init__(parent)
@@ -276,14 +301,33 @@ class ChampionView(QListView):
         self._c.set_selected(champ["name"], on)
         self.toggled.emit(champ["name"], on)
 
+    def _request_detail(self, index):
+        if index.isValid():
+            self.detail_requested.emit(index.data(ChampionRole)["name"])
+
+    def _on_info_badge(self, index, pos) -> bool:
+        """Điểm bấm có nằm trên nút ⓘ của thẻ không (chỉ dạng thẻ ảnh mới có nút này)."""
+        return (self.mode == MODE_CARDS and index.isValid()
+                and info_rect(inner_card_rect(self.visualRect(index))).contains(QPointF(pos)))
+
     def mouseReleaseEvent(self, event):
+        pos = event.position().toPoint()
+        index = self.indexAt(pos)
         if event.button() == Qt.MouseButton.LeftButton:
-            self._toggle_index(self.indexAt(event.position().toPoint()))
+            if self._on_info_badge(index, pos):
+                self._request_detail(index)  # bấm ⓘ chỉ mở chi tiết, không đổi trạng thái chọn
+            else:
+                self._toggle_index(index)
+        elif event.button() == Qt.MouseButton.RightButton:
+            self._request_detail(index)
         super().mouseReleaseEvent(event)
 
     def keyPressEvent(self, event):
         if event.key() in (Qt.Key.Key_Space, Qt.Key.Key_Return, Qt.Key.Key_Enter):
             self._toggle_index(self.currentIndex())
+            return
+        if event.key() == Qt.Key.Key_I:
+            self._request_detail(self.currentIndex())
             return
         super().keyPressEvent(event)
 

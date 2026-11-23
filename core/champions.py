@@ -16,6 +16,7 @@ import requests
 
 from core import config as _config
 from core.config import TEMPLATES_DIR, ensure_dirs, normalize_locale
+from core.logging_setup import logger
 from core.name_matcher import normalize_name
 
 DDRAGON_VERSIONS = "https://ddragon.leagueoflegends.com/api/versions.json"
@@ -27,6 +28,8 @@ LOCALES = ("vi_VN", "en_US")  # hai ngôn ngữ luôn tải: tên hiển thị +
 # trong patch mới nhất, nên phải quét từng patch rồi gộp lại (xem load_all_champions).
 MIN_TFT_MAJOR = 13
 FETCH_WORKERS = 8
+# Số ảnh chân dung tải cùng lúc. Mỗi ảnh ~200 KB và tốn ~0,7 s chờ mạng, nên tải lần lượt 237 ảnh mất gần 3 phút; 8 luồng còn ~30 giây.
+PORTRAIT_WORKERS = 8
 CATALOG_NAME = "champions_catalog.json"
 CATALOG_SCHEMA = 1
 
@@ -430,6 +433,35 @@ def download_template(name: str, url: str) -> Path | None:
     except (requests.RequestException, OSError):
         tmp.unlink(missing_ok=True)
         return None
+
+
+def run_parallel(items: list, fn, workers: int = PORTRAIT_WORKERS, should_stop=lambda: False) -> None:
+    """Chạy fn(phần_tử) cho từng phần tử bằng tối đa `workers` luồng, lấy theo thứ tự danh sách (phần tử đầu được bắt đầu trước,
+    nên danh sách xếp theo độ ưu tiên thì cái quan trọng được tải trước). Chỉ về khi hết việc hoặc should_stop() thành True (các
+    việc đang chạy dở vẫn làm nốt). fn ném lỗi thì ghi log và đi tiếp phần tử khác, không làm chết cả đợt. Luồng daemon để mạng treo
+    không chặn thoát app."""
+    if not items:
+        return
+    work: queue.Queue = queue.Queue()
+    for item in items:
+        work.put(item)
+
+    def worker():
+        while not should_stop():
+            try:
+                item = work.get_nowait()
+            except queue.Empty:
+                return
+            try:
+                fn(item)
+            except Exception:
+                logger.exception("Lỗi khi xử lý %r", item)
+
+    threads = [threading.Thread(target=worker, daemon=True) for _ in range(max(1, min(workers, len(items))))]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
 
 
 def load_template_image(path: Path) -> np.ndarray | None:

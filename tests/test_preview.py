@@ -137,15 +137,15 @@ class TestSaveAndLoad:
         """Đúng lúc file đang được thay, mở để đọc báo PermissionError thoáng qua (đo thật: 88 lần trong 240 lần ghi)."""
         frame = clean_frame(1)
         pv.save_capture(frame)
-        real, fails = np.fromfile, {"n": 2}
+        real, fails = pv._read_file, {"n": 2}
 
-        def flaky(path, dtype=None):
+        def flaky(path):
             if fails["n"] > 0:
                 fails["n"] -= 1
                 raise PermissionError("[Errno 13] Permission denied")
-            return real(path, dtype=dtype)
+            return real(path)
 
-        monkeypatch.setattr(pv.np, "fromfile", flaky)
+        monkeypatch.setattr(pv, "_read_file", flaky)
         got = pv.load_capture()
         assert got is not None and np.array_equal(got[0], frame) and fails["n"] == 0
 
@@ -153,21 +153,21 @@ class TestSaveAndLoad:
         pv.save_capture(clean_frame(1))
         monkeypatch.setattr(pv, "_REPLACE_WAIT_S", 0.0)
 
-        def locked(path, dtype=None):
+        def locked(path):
             raise PermissionError("khóa mãi")
 
-        monkeypatch.setattr(pv.np, "fromfile", locked)
+        monkeypatch.setattr(pv, "_read_file", locked)
         assert pv.load_capture() is None
 
     def test_missing_file_is_not_retried(self, data_dir, monkeypatch):
         calls = []
-        real = np.fromfile
+        real = pv._read_file
 
-        def counting(path, dtype=None):
+        def counting(path):
             calls.append(1)
-            return real(path, dtype=dtype)
+            return real(path)
 
-        monkeypatch.setattr(pv.np, "fromfile", counting)
+        monkeypatch.setattr(pv, "_read_file", counting)
         assert pv.load_capture() is None and len(calls) == 1
 
     def test_permission_error_that_never_clears_is_finally_raised(self, data_dir, monkeypatch):

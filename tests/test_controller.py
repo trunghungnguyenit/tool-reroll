@@ -18,7 +18,7 @@ import core.champions as champions
 import core.monitors as monitors_mod
 from core.monitors import Monitor
 from core.preview import PreviewResult
-from tests.fakes import BAD_OCR, ENTRIES, OK_OCR, FakeScanner, fake_loader, champ, plan
+from tests.fakes import BAD_OCR, DETAILS, ENTRIES, OK_OCR, FakeScanner, champ, fake_details, fake_loader, plan
 
 
 class Events:
@@ -56,8 +56,13 @@ def hotkeys():
 def make(data_dir, monkeypatch, ev, hotkeys):
     FakeScanner.instances = []
     monkeypatch.setattr(ctl, "load_all_champions", fake_loader(ENTRIES))
+    # Mặc định không tải ảnh thật: URL giả (http://x/...) sẽ ra mạng thật trong luồng nền, luồng đó sống lâu hơn test của nó rồi gọi nhầm
+    # hàm giả của test sau (làm test sau fail ngẫu nhiên). Test nào cần hàm giả riêng thì gán đè sau fixture này.
+    monkeypatch.setattr(ctl, "download_template", lambda name, url: None)
     kb = types.SimpleNamespace(add_hotkey=lambda *a, **k: hotkeys.added.append(a),
                                unhook_all=lambda: setattr(hotkeys, "unhooked", True))
+
+    made = []
 
     def factory(saved_config=None, post=None):
         if saved_config is not None:
@@ -67,9 +72,17 @@ def make(data_dir, monkeypatch, ev, hotkeys):
         while not _Q.empty():
             _Q.get_nowait()
         kw = {"post": post or _Q.put}
-        return ctl.AppController(ev, keyboard=kb, scanner_factory=FakeScanner, **kw)
+        k = ctl.AppController(ev, keyboard=kb, scanner_factory=FakeScanner, **kw)
+        made.append(k)
+        return k
 
-    return factory
+    yield factory
+    # Luồng tải ảnh nền có thể chưa kịp chạy khi test kết thúc; để nó sống sang test sau thì nó gọi nhầm hàm giả của test đó.
+    for k in made:
+        k.closing = True
+    deadline = time.monotonic() + 3
+    while any(k._portraits_running for k in made) and time.monotonic() < deadline:
+        time.sleep(0.005)
 
 
 _Q: "queue.Queue" = queue.Queue()  # việc thread nền đưa về "luồng giao diện": chỉ chạy khi test gọi drain()
@@ -1419,12 +1432,57 @@ class TestPortraitsAllSeasons:
             return None  # tải lỗi: không được thử lại vô hạn
 
         monkeypatch.setattr(ctl, "download_template", fake)
+        monkeypatch.setattr(ctl, "PORTRAIT_WORKERS", 1)  # một luồng thì thứ tự gọi mới xác định được
         k = make()
         k.populate_champions(MULTI)
         assert wait_for(lambda: not k._portraits_running)
         assert sorted(got) == sorted(c["name"] for c in k.champions) and len(got) == len(set(got))
         sets = [next(c for c in k.champions if c["name"] == n)["set"] or 0 for n in got]
         assert sets == sorted(sets, reverse=True)  # mùa mới nhất trước
+
+    def test_portraits_download_in_parallel_and_each_one_notifies(self, make, ev, monkeypatch):
+        lock = threading.Lock()
+        active = peak = 0
+
+        def fake(name, url):
+            nonlocal active, peak
+            with lock:
+                active += 1
+                peak = max(peak, active)
+            time.sleep(0.1)  # chờ mạng
+            with lock:
+                active -= 1
+            p = champions.template_path(name, url)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(b"x")
+            return p
+
+        monkeypatch.setattr(ctl, "download_template", fake)
+        k = make()
+        started = time.monotonic()
+        k.populate_champions(MULTI)
+        assert wait_for(lambda: not k._portraits_running)
+        elapsed = time.monotonic() - started
+        n = len(k.champions)
+        assert peak > 1  # có tải cùng lúc
+        assert elapsed < 0.1 * n * 0.7  # nhanh hơn rõ rệt so với tải lần lượt (n * 0,1 s)
+        assert len(ev.of("portrait_ready")) == n
+
+    def test_one_failing_download_does_not_stop_the_others(self, make, ev, monkeypatch):
+        def fake(name, url):
+            if name == "Zed":
+                raise OSError("đĩa đầy")
+            p = champions.template_path(name, url)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(b"x")
+            return p
+
+        monkeypatch.setattr(ctl, "download_template", fake)
+        k = make()
+        k.populate_champions(MULTI)
+        assert wait_for(lambda: not k._portraits_running)
+        done = {e["name"] for e in ev.of("portrait_ready")}
+        assert done == {c["name"] for c in k.champions} - {"Zed"}
 
     def test_cards_added_by_a_later_update_are_fetched_too(self, make, ev, monkeypatch):
         got = []
@@ -1444,3 +1502,99 @@ class TestPortraitsAllSeasons:
         assert wait_for(lambda: not k._portraits_running)
         assert {"Garen", "Ngộ Không", "Kha'Zix"} <= set(got)
         assert got.count("Vex") == 1 and got.count("Garen") == 1  # cái đã có ảnh không tải lại, cái mới tải đúng một lần
+
+
+# ----------------------------------------------------------------------------- chi tiết tướng (chỉ số, kỹ năng, hệ)
+class TestChampionDetails:
+    VEX = {"name": "Vex", "alt_name": "Vex"}
+
+    def test_nothing_requested_yet(self, make):
+        k = make()
+        assert k.details_state() == "idle" and k.detail_for(self.VEX) is None and not k.loading_details
+
+    def test_loads_in_background_then_serves_details(self, make, ev, monkeypatch):
+        calls = []
+        monkeypatch.setattr(ctl, "get_details", fake_details(calls=calls))
+        k = make()
+        k.request_details()
+        assert wait_for(lambda: k.details_state() == "ready")
+        assert k.detail_for(self.VEX) == DETAILS["vex"] and k.detail_for({"name": "Không có", "alt_name": ""}) is None
+        assert calls == ["vi_VN"] and not k.loading_details and not k.details_offline
+        assert len(ev.of("details_changed")) >= 2  # lúc bắt đầu tải và lúc xong: giao diện vẽ lại cả hai lần
+
+    def test_state_is_loading_while_the_download_runs(self, make, monkeypatch):
+        release = threading.Event()
+
+        def slow(locale):
+            release.wait(5)
+            return fake_details()(locale)
+
+        monkeypatch.setattr(ctl, "get_details", slow)
+        k = make()
+        k.request_details()
+        assert k.details_state() == "loading" and k.loading_details
+        release.set()
+        assert wait_for(lambda: k.details_state() == "ready")
+
+    def test_requests_while_loading_or_loaded_do_not_download_again(self, make, monkeypatch):
+        calls = []
+        release = threading.Event()
+        inner = fake_details(calls=calls)
+
+        def slow(locale):
+            release.wait(5)
+            return inner(locale)
+
+        monkeypatch.setattr(ctl, "get_details", slow)
+        k = make()
+        k.request_details()
+        k.request_details()  # đang tải: bỏ qua
+        release.set()
+        assert wait_for(lambda: k.details_state() == "ready")
+        k.request_details()  # đã có: bỏ qua
+        time.sleep(0.1)
+        assert calls == ["vi_VN"]
+
+    def test_uses_the_configured_language(self, make, monkeypatch):
+        calls = []
+        monkeypatch.setattr(ctl, "get_details", fake_details(calls=calls))
+        k = make({"champion_locale": "en_US"})
+        k.request_details()
+        assert wait_for(lambda: k.details_state() == "ready") and calls == ["en_US"]
+
+    def test_failure_is_reported_and_retry_works(self, make, ev, monkeypatch):
+        calls = []
+        monkeypatch.setattr(ctl, "get_details", fake_details(fail=ConnectionError("mất mạng"), calls=calls))
+        k = make()
+        k.request_details()
+        assert wait_for(lambda: k.details_state() == "error")
+        assert "mất mạng" in k.details_error and "Không tải được chi tiết tướng" in ev.logs()
+        assert k.detail_for(self.VEX) is None and not k.loading_details
+        monkeypatch.setattr(ctl, "get_details", fake_details(calls=calls))
+        k.request_details()  # chưa có dữ liệu: gọi lại là thử lại
+        assert wait_for(lambda: k.details_state() == "ready") and k.details_error == "" and len(calls) == 2
+
+    def test_force_reloads_even_when_data_exists(self, make, monkeypatch):
+        calls = []
+        monkeypatch.setattr(ctl, "get_details", fake_details(calls=calls))
+        k = make()
+        k.request_details()
+        assert wait_for(lambda: k.details_state() == "ready")
+        k.request_details(force=True)
+        assert wait_for(lambda: len(calls) == 2 and not k.loading_details)
+
+    def test_offline_cache_is_flagged_and_logged(self, make, ev, monkeypatch):
+        monkeypatch.setattr(ctl, "get_details", fake_details(offline=True))
+        k = make()
+        k.request_details()
+        assert wait_for(lambda: k.details_state() == "ready")
+        assert k.details_offline and "đang dùng bản đã lưu" in ev.logs()
+
+    def test_closing_app_drops_the_result(self, make, monkeypatch):
+        monkeypatch.setattr(ctl, "get_details", fake_details())
+        k = make()
+        k.closing = True
+        k.request_details()
+        time.sleep(0.2)
+        drain()
+        assert k.details is None

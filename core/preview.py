@@ -10,6 +10,7 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 
 import cv2
 import mss
@@ -61,7 +62,7 @@ def save_capture(frame: np.ndarray) -> None:
     path = _config.SHOP_CAPTURE_PATH
     tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.part")
     try:
-        buf.tofile(str(tmp))
+        tmp.write_bytes(buf.tobytes())  # không dùng ndarray.tofile: nó cần FILE* của CRT (tối đa 512) nên văng OSError khi tiến trình đang mở nhiều file
         with _write_lock:  # os.replace tự nguyên tử; khóa chỉ để thứ tự ghi rõ ràng
             _replace_with_retry(tmp, path)
     finally:
@@ -70,11 +71,15 @@ def save_capture(frame: np.ndarray) -> None:
     _config.LEGACY_SHOP_PREVIEW_PATH.unlink(missing_ok=True)
 
 
+def _read_file(path) -> bytes:
+    return Path(path).read_bytes()  # không dùng np.fromfile (lý do như ở save_capture)
+
+
 def _read_bytes_with_retry(path) -> np.ndarray:
     """Đọc file; PermissionError tạm thời (đúng lúc file đang được thay thế) thì thử lại vài lần. Thiếu file → ném ngay."""
     for attempt in range(_REPLACE_TRIES):
         try:
-            return np.fromfile(str(path), dtype=np.uint8)
+            return np.frombuffer(_read_file(path), dtype=np.uint8)
         except PermissionError:
             if attempt == _REPLACE_TRIES - 1:
                 raise

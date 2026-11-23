@@ -1,4 +1,7 @@
+import threading
+import time
 import types
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -27,7 +30,7 @@ def test_safe_filename(name, expected):
 def write_image(path, ext=".jpg", seed=1):
     ok, buf = cv2.imencode(ext, make_card(seed))
     assert ok
-    buf.tofile(str(path))
+    Path(path).write_bytes(buf.tobytes())  # không dùng tofile: cần FILE* của CRT, hết chỗ khi cả bộ test chạy chung một tiến trình
     return path
 
 
@@ -99,6 +102,50 @@ def test_download_template_failure_returns_none_and_leaves_no_file(data_dir, mon
     monkeypatch.setattr(champions.requests, "get", fake_get)
     assert champions.download_template("Vex", "http://x/vex.png") is None
     assert not list((data_dir / "templates").glob("*"))
+
+
+class TestRunParallel:
+    def test_runs_every_item_exactly_once_with_several_threads(self):
+        lock = threading.Lock()
+        seen, active, peak = [], 0, 0
+
+        def fn(item):
+            nonlocal active, peak
+            with lock:
+                active += 1
+                peak = max(peak, active)
+            time.sleep(0.05)
+            with lock:
+                active -= 1
+                seen.append(item)
+
+        champions.run_parallel(list(range(20)), fn, workers=4)
+        assert sorted(seen) == list(range(20))
+        assert 1 < peak <= 4  # song song nhưng không vượt số luồng cho phép
+
+    def test_takes_items_in_list_order(self):
+        order = []
+        champions.run_parallel(list(range(10)), order.append, workers=1)
+        assert order == list(range(10))
+
+    def test_an_exception_does_not_stop_the_other_items(self):
+        done = []
+
+        def fn(item):
+            if item == 3:
+                raise OSError("boom")
+            done.append(item)
+
+        champions.run_parallel(list(range(8)), fn, workers=3)
+        assert sorted(done) == [0, 1, 2, 4, 5, 6, 7]
+
+    def test_should_stop_ends_early(self):
+        done = []
+        champions.run_parallel(list(range(50)), done.append, workers=2, should_stop=lambda: len(done) >= 5)
+        assert 5 <= len(done) < 50
+
+    def test_empty_list_returns_immediately(self):
+        champions.run_parallel([], lambda item: pytest.fail("không được gọi"))
 
 
 def test_prepare_shop_template_is_square_crop():
