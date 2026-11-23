@@ -9,7 +9,7 @@ import cv2
 import numpy as np
 import pytest
 from PIL import Image
-from PySide6.QtCore import QPoint, QRect, Qt
+from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QImage
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLabel, QMessageBox, QScrollArea, QWidget
@@ -17,9 +17,12 @@ from PySide6.QtWidgets import QApplication, QLabel, QMessageBox, QScrollArea, QW
 import core.champions as champions
 import core.config as config
 import core.controller as ctl
+import core.monitors as monitors_mod
+from core.monitors import Monitor
 from core.preview import PreviewResult
-from tests.fakes import BAD_OCR, ENTRIES, OK_OCR, FakeScanner
+from tests.fakes import BAD_OCR, ENTRIES, OK_OCR, FakeScanner, champ, fake_loader
 from ui import main_window as mw
+from tests.overlay_fakes import Cursor, drag, one_screen
 from ui import overlay as ov
 from ui import theme
 from ui.champion_view import MODE_CARDS, MODE_TEXT
@@ -42,7 +45,7 @@ def boxes(monkeypatch):
 @pytest.fixture
 def make_window(qtbot, data_dir, monkeypatch, boxes):
     FakeScanner.instances = []
-    monkeypatch.setattr(ctl, "fetch_champion_list", lambda locale=None: ENTRIES)
+    monkeypatch.setattr(ctl, "load_all_champions", fake_loader(ENTRIES))
     monkeypatch.setattr(ctl, "download_template", lambda n, u: None)
     monkeypatch.setattr(ctl, "build_shop_preview", lambda *a, **k: PreviewResult(None, False, ""))
     kb = types.SimpleNamespace(add_hotkey=lambda *a, **k: None, unhook_all=lambda: None)
@@ -125,8 +128,8 @@ class TestTopBar:
         assert f"] Phiên bản: {app_version()}" in text and "build 20" not in text
 
     def test_status_and_selected_chip_follow_loading(self, window):
-        assert window.status_label.text().startswith("Đã tải 5 tướng")
-        assert window.count_label.text() == "5/5 tướng"
+        assert window.status_label.text().startswith("Đã tải 6 tướng")
+        assert window.count_label.text() == "6/6 tướng"
 
 
 class TestImmediateFeedback:
@@ -259,15 +262,15 @@ class TestChampionList:
     def names(self, w):
         return [c["name"] for c in w.view.champion_model.items()]
 
-    def test_shows_latest_set_only_by_default(self, window):
-        assert sorted(self.names(window)) == ["Ahri", "Graves", "Jinx", "Vex", "Zed"]
+    def test_shows_every_season_by_default(self, window):
+        assert sorted(self.names(window)) == ["Ahri", "Graves", "Jinx", "Sivir", "Vex", "Zed"]
 
     def test_search_filters_instantly_without_creating_widgets(self, window, qtbot):
         qtbot.keyClick(window.search, "g")  # lần gõ đầu Qt tạo nút xóa nội bộ của ô tìm kiếm
         before = len(window.findChildren(QWidget))
         for ch in "ra":
             qtbot.keyClick(window.search, ch)
-        assert self.names(window) == ["Graves"] and window.count_label.text() == "1/5 tướng"
+        assert self.names(window) == ["Graves"] and window.count_label.text() == "1 kết quả (tìm trong mọi mùa)"
         after = len(window.findChildren(QWidget))
         assert after == before  # gõ tìm kiếm không dựng/hủy widget nào (khác bản Tk dựng lại cả lưới)
 
@@ -275,18 +278,18 @@ class TestChampionList:
         window.search.setText("  ZED ")
         assert self.names(window) == ["Zed"]
         window.search.clear()
-        assert len(self.names(window)) == 5
+        assert len(self.names(window)) == 6
 
     def test_empty_search_result_is_empty_list(self, window):
         window.search.setText("không có tướng này")
-        assert self.names(window) == [] and window.count_label.text() == "0/5 tướng"
+        assert self.names(window) == [] and window.count_label.text() == "0 kết quả (tìm trong mọi mùa)"
 
     def test_cost_chips_filter_and_unavailable_cost_is_disabled(self, window):
         assert not window.cost_buttons[3].isEnabled() and window.cost_buttons[1].isEnabled()
         window.cost_buttons[1].setChecked(True)
-        assert sorted(self.names(window)) == ["Graves", "Vex"]
+        assert sorted(self.names(window)) == ["Graves", "Sivir", "Vex"]
         window.cost_buttons[5].setChecked(True)
-        assert sorted(self.names(window)) == ["Graves", "Jinx", "Vex"]
+        assert sorted(self.names(window)) == ["Graves", "Jinx", "Sivir", "Vex"]
 
     def test_only_selected_filter(self, window):
         window.only_sel_btn.setChecked(True)
@@ -294,9 +297,6 @@ class TestChampionList:
         click_card_names = window.view.champion_model.items()
         assert len(click_card_names) == 1
 
-    def test_show_old_adds_the_old_season_card(self, window):
-        window.old_btn.setChecked(True)
-        assert "Sivir" in self.names(window)
 
     def test_click_toggles_selection_immediately_and_updates_chips(self, window, qtbot):
         assert not window.c.is_selected("Zed")
@@ -321,7 +321,7 @@ class TestChampionList:
     def test_select_all_and_deselect_all_buttons(self, window, qtbot):
         buttons = {b.text(): b for b in window.champ_panel.findChildren(type(window.mode_btn))}
         buttons["Chọn tất cả"].click()
-        assert len(window.c.selected_names()) == 5 and window.chip_selected.text() == "5 tướng đang chọn"
+        assert len(window.c.selected_names()) == 6 and window.chip_selected.text() == "6 tướng đang chọn"
         buttons["Bỏ chọn"].click()
         assert window.c.selected_names() == [] and window.chip_ready.property("tone") == "fail"
 
@@ -358,10 +358,7 @@ class TestChampionList:
         assert "đã chọn" in idx.data(Qt.ItemDataRole.AccessibleTextRole)
 
     def test_failed_load_keeps_saved_selection_counted(self, make_window, monkeypatch):
-        def boom(locale=None):
-            raise ConnectionError("offline")
-
-        monkeypatch.setattr(ctl, "fetch_champion_list", boom)
+        monkeypatch.setattr(ctl, "load_all_champions", fake_loader([], fail=ConnectionError("offline")))
         w = make_window(ready_config(selected_champions=["Vex", "Zed"]))
         QTest.qWait(300)
         assert w.chip_selected.text() == "2 tướng đang chọn" and "Lỗi tải tướng" in w.status_label.text()
@@ -496,10 +493,10 @@ class TestAdaptiveLayout:
             top = w.start_btn.mapTo(w, QPoint(0, 0))
             assert 0 <= top.y() < 80 and w.start_btn.isVisible()
 
-    def test_log_is_always_visible(self, make_window):
+    def test_log_bar_is_always_visible_but_closed(self, make_window):
         for size in ((1100, 700), (420, 600)):
             w = make_window(ready_config(), size=size)
-            assert w.log_view.isVisible() and w.log_view.height() >= 60
+            assert w.log_toggle.isVisible() and not w.log_view.isVisible()
 
 
 class TestTheme:
@@ -672,169 +669,31 @@ class TestWidgets:
         assert b.fontMetrics().horizontalAdvance(b.text()) <= 200
 
 
-# --------------------------------------------------------------------------- overlay chọn vùng / điểm click
-def fake_background(w=800, h=400):
-    from PySide6.QtGui import QPixmap
-
-    pix = QPixmap(w, h)
-    pix.fill(Qt.GlobalColor.darkGray)
-    return pix, QRect(0, 0, w, h)
-
-
-class Cursor:
-    """Con trỏ vật lý giả: bằng tọa độ logic nhân hệ số (mô phỏng scale 150%)."""
-
-    def __init__(self, scale=1.5):
-        self.scale = scale
-        self.pos = (0, 0)
-
-    def __call__(self):
-        return self.pos
-
-
-def drag(qtbot, overlay, cursor, a, b):
-    cursor.pos = (int(a.x() * cursor.scale), int(a.y() * cursor.scale))
-    qtbot.mousePress(overlay, Qt.MouseButton.LeftButton, pos=a)
-    mid = QPoint((a.x() + b.x()) // 2, (a.y() + b.y()) // 2)
-    cursor.pos = (int(mid.x() * cursor.scale), int(mid.y() * cursor.scale))
-    QTest.mouseMove(overlay, mid)
-    cursor.pos = (int(b.x() * cursor.scale), int(b.y() * cursor.scale))
-    qtbot.mouseRelease(overlay, Qt.MouseButton.LeftButton, pos=b)
-
-
-class TestRegionOverlay:
-    def make(self, qtbot, cursor):
-        bg, virtual = fake_background()
-        o = ov.RegionOverlay(bg, virtual, phys=cursor)
-        qtbot.addWidget(o)
-        o.show()
-        return o
-
-    def test_drag_emits_physical_pixel_region(self, qtbot):
-        cur = Cursor(1.5)
-        o = self.make(qtbot, cur)
-        got = []
-        o.finished.connect(got.append)
-        drag(qtbot, o, cur, QPoint(100, 120), QPoint(500, 200))
-        assert got == [{"left": 150, "top": 180, "width": 600, "height": 120}]  # lưu theo pixel vật lý, không phải pixel Qt
-
-    def test_drag_any_direction_normalises(self, qtbot):
-        cur = Cursor(1.0)
-        o = self.make(qtbot, cur)
-        got = []
-        o.finished.connect(got.append)
-        drag(qtbot, o, cur, QPoint(500, 300), QPoint(100, 120))
-        assert got == [{"left": 100, "top": 120, "width": 400, "height": 180}]
-
-    def test_tiny_drag_is_rejected_and_overlay_stays_open(self, qtbot):
-        cur = Cursor(1.0)
-        o = self.make(qtbot, cur)
-        got = []
-        o.finished.connect(got.append)
-        drag(qtbot, o, cur, QPoint(100, 100), QPoint(120, 110))
-        assert got == [] and o.last_rejected and o.isVisible()
-        o.grab()  # vẽ lại với gợi ý "quá nhỏ"
-        drag(qtbot, o, cur, QPoint(100, 100), QPoint(400, 200))
-        assert len(got) == 1
-
-    def test_escape_cancels(self, qtbot):
-        o = self.make(qtbot, Cursor())
-        with qtbot.waitSignal(o.cancelled, timeout=1000):
-            qtbot.keyClick(o, Qt.Key.Key_Escape)
-
-    def test_right_click_is_ignored(self, qtbot):
-        cur = Cursor(1.0)
-        o = self.make(qtbot, cur)
-        got = []
-        o.finished.connect(got.append)
-        qtbot.mousePress(o, Qt.MouseButton.RightButton, pos=QPoint(10, 10))
-        qtbot.mouseRelease(o, Qt.MouseButton.RightButton, pos=QPoint(300, 300))
-        assert got == []
-
-    def test_paints_selection_magnifier_and_hint_without_error(self, qtbot):
-        cur = Cursor(1.0)
-        o = self.make(qtbot, cur)
-        cur.pos = (100, 100)
-        qtbot.mousePress(o, Qt.MouseButton.LeftButton, pos=QPoint(100, 100))
-        cur.pos = (400, 250)
-        QTest.mouseMove(o, QPoint(400, 250))
-        assert not o.grab().isNull()
-
-    def test_falls_back_to_scaled_logical_position_when_cursor_api_fails(self, qtbot):
-        o = self.make(qtbot, lambda: None)
-        x, y = o._physical(QPoint(50, 60))
-        assert isinstance(x, int) and isinstance(y, int)
-
-
-class TestClickOverlay:
-    def make(self, qtbot, cursor, region=None):
-        bg, virtual = fake_background()
-        region = region or {"left": 100, "top": 100, "width": 600, "height": 150}
-        o = ov.ClickOverlay(region, lambda x, y: 100 <= x <= 700 and 100 <= y <= 250, bg, virtual, phys=cursor)
-        qtbot.addWidget(o)
-        o.show()
-        return o
-
-    def click(self, qtbot, o, cur, x, y):
-        cur.pos = (x, y)
-        qtbot.mouseClick(o, Qt.MouseButton.LeftButton, pos=QPoint(x, y))
-
-    def test_five_clicks_finish_with_physical_points(self, qtbot):
-        cur = Cursor()
-        o = self.make(qtbot, cur)
-        got = []
-        o.finished.connect(got.append)
-        pts = [(150 + i * 110, 170) for i in range(5)]
-        for x, y in pts:
-            self.click(qtbot, o, cur, x, y)
-        assert got == [pts]
-
-    def test_outside_click_is_rejected_with_a_message(self, qtbot):
-        cur = Cursor()
-        o = self.make(qtbot, cur)
-        self.click(qtbot, o, cur, 10, 10)
-        assert o.points == [] and "NGOÀI vùng Shop" in o.warning and "ô 1/5" in o.warning
-        self.click(qtbot, o, cur, 200, 150)
-        assert len(o.points) == 1 and o.warning == ""
-
-    def test_backspace_removes_last_point(self, qtbot):
-        cur = Cursor()
-        o = self.make(qtbot, cur)
-        self.click(qtbot, o, cur, 150, 150)
-        self.click(qtbot, o, cur, 250, 150)
-        qtbot.keyClick(o, Qt.Key.Key_Backspace)
-        assert o.points == [(150, 150)] and "ô 2/5" in o._hint()
-        qtbot.keyClick(o, Qt.Key.Key_Backspace)
-        qtbot.keyClick(o, Qt.Key.Key_Backspace)  # hết điểm: không lỗi
-        assert o.points == []
-
-    def test_escape_cancels_and_paint_with_points_works(self, qtbot):
-        cur = Cursor()
-        o = self.make(qtbot, cur)
-        self.click(qtbot, o, cur, 150, 150)
-        assert not o.grab().isNull()
-        with qtbot.waitSignal(o.cancelled, timeout=1000):
-            qtbot.keyClick(o, Qt.Key.Key_Escape)
-
-
+# --------------------------------------------------------------------------- luồng chọn vùng / điểm click / xem (overlay thay bằng giả)
 class TestWindowCalibrationFlow:
-    def make(self, make_window, qtbot, kind):
+    def make(self, make_window, qtbot, kind, config_extra=None):
         holder = {}
 
-        def factory(which):
-            cur = Cursor(1.0)
-            bg, virtual = fake_background()
+        def factory(which, plan=None):
+            cur = Cursor()
+            screens = one_screen()
             if which == "region":
-                o = ov.RegionOverlay(bg, virtual, phys=cur)
+                o = ov.RegionOverlay(screens, phys=cur)
+            elif which == "clicks":
+                o = ov.ClickOverlay(holder["w"].c.config["shop_region"], holder["w"].c.point_inside_region, screens, phys=cur)
             else:
-                o = ov.ClickOverlay(holder["w"].c.config["shop_region"], holder["w"].c.point_inside_region, bg, virtual,
-                                    phys=cur)
+                o = ov.ViewOverlay(plan["region"], plan["centers"], "", plan["confirm"], screens, phys=cur)
             o.cursor_ = cur
             holder["overlay"] = o
+            holder["which"] = which
+            holder["plan"] = plan
+            for s in o.surfaces:
+                qtbot.addWidget(s)
             return o
 
-        w = make_window(ready_config(shop_region=None, slot_centers=[]) if kind == "region" else ready_config(),
-                        overlay_factory=factory)
+        base = ready_config(shop_region=None, slot_centers=[]) if kind == "region" else ready_config()
+        base.update(config_extra or {})
+        w = make_window(base, overlay_factory=factory)
         holder["w"] = w
         return w, holder
 
@@ -844,7 +703,7 @@ class TestWindowCalibrationFlow:
         assert w.isMinimized()
         qtbot.waitUntil(lambda: "overlay" in holder, timeout=2000)
         o = holder["overlay"]
-        drag(qtbot, o, o.cursor_, QPoint(100, 100), QPoint(600, 250))
+        drag(qtbot, o, o.cursor_, o.surfaces[0], QPoint(100, 100), QPoint(600, 250))
         assert w.c.config["shop_region"] == {"left": 100, "top": 100, "width": 500, "height": 150}
         assert not w.isMinimized() and w._overlay is None
         assert json.loads((data_dir / "config.json").read_text(encoding="utf-8"))["shop_region"]["width"] == 500
@@ -860,7 +719,7 @@ class TestWindowCalibrationFlow:
         o = holder["overlay"]
         for i in range(5):
             o.cursor_.pos = (40 + i * 190, 150)
-            qtbot.mouseClick(o, Qt.MouseButton.LeftButton, pos=QPoint(40 + i * 190, 150))
+            qtbot.mouseClick(o.surfaces[0], Qt.MouseButton.LeftButton, pos=QPoint(40 + i * 190, 150))
         assert [tuple(p) for p in w.c.config["slot_centers"]] == [(40 + i * 190, 150) for i in range(5)]
         assert w.clicks_btn.text().startswith("✓") and not w.isMinimized()
 
@@ -875,6 +734,265 @@ class TestWindowCalibrationFlow:
         w = make_window({"coords_version": config.COORDS_VERSION, "theme": "light"}, size=(460, 780))
         w.clicks_btn.click()
         assert boxes.items[-1][2] == "Hãy chọn vùng Shop trước." and w.tabbar.currentIndex() == mw.PAGE_SHOP
+
+    # --- xem trên màn hình thật
+    def test_view_button_shows_the_saved_region_and_points_then_closes_on_click(self, make_window, qtbot):
+        w, holder = self.make(make_window, qtbot, "view")
+        w.view_btn.click()
+        assert w.isMinimized()
+        qtbot.waitUntil(lambda: "overlay" in holder, timeout=2000)
+        o = holder["overlay"]
+        assert holder["which"] == "view" and holder["plan"]["confirm"] is False
+        assert holder["plan"]["region"] == w.c.config["shop_region"] and len(holder["plan"]["centers"]) == 5
+        qtbot.mouseClick(o.surfaces[0], Qt.MouseButton.LeftButton, pos=QPoint(10, 10))
+        assert not w.isMinimized() and w._overlay is None
+        assert w.c.config["shop_region"] == ready_config()["shop_region"]  # chỉ xem: không đổi gì
+
+    def test_view_without_region_explains_and_goes_to_region_step(self, make_window, qtbot, boxes):
+        w, holder = self.make(make_window, qtbot, "region")
+        w.view_btn.click()
+        assert "overlay" not in holder and not w.isMinimized()
+        assert boxes.items[-1][1] == "Xem trên màn hình" and "chọn vùng Shop" in boxes.items[-1][2]
+
+    def test_view_with_region_but_no_points_still_opens(self, make_window, qtbot):
+        w, holder = self.make(make_window, qtbot, "view", {"slot_centers": []})
+        w.view_btn.click()
+        qtbot.waitUntil(lambda: "overlay" in holder, timeout=2000)
+        assert holder["plan"]["centers"] == []
+        for s in holder["overlay"].surfaces:
+            assert not s.grab().isNull()
+        holder["overlay"].cancelled.emit()
+
+
+class TestMonitorUi:
+    """Thẻ 'Vùng Shop và điểm click': màn hình đang dùng, nút Xem trên màn hình, và luồng gợi ý quy đổi cần xác nhận."""
+
+    M1 = Monitor(r"\\.\DISPLAY1", 0, 0, 1920, 1080, 100, True)
+    M2 = Monitor(r"\\.\DISPLAY2", 1920, 0, 2560, 1440, 150)
+
+    @pytest.fixture
+    def two_monitors(self, monkeypatch):
+        state = {"game": None}
+        monkeypatch.setattr(monitors_mod, "list_monitors", lambda: [self.M1, self.M2])
+        monkeypatch.setattr(monitors_mod, "game_monitor", lambda names, mons: state["game"])
+        return state
+
+    def window_with_overlay_log(self, make_window, qtbot, **extra):
+        holder = {}
+
+        def factory(which, plan=None):
+            assert which == "view"
+            o = ov.ViewOverlay(plan["region"], plan["centers"], "", plan["confirm"], one_screen(), phys=Cursor())
+            for s in o.surfaces:
+                qtbot.addWidget(s)
+            holder["overlay"], holder["plan"] = o, plan
+            return o
+
+        w = make_window(ready_config(**extra), overlay_factory=factory)
+        return w, holder
+
+    def test_label_names_the_monitor_in_use_after_startup(self, make_window, qtbot, two_monitors):
+        w = make_window(ready_config())
+        qtbot.waitUntil(lambda: "Màn hình 1" in w.monitor_label.text(), timeout=3000)
+        assert "1920×1080" in w.monitor_label.text() and w.view_btn.text() == "👁  Xem"
+
+    def test_game_on_another_monitor_without_a_profile_shows_a_warning_and_asks_to_confirm(self, make_window, qtbot, two_monitors):
+        w = make_window(ready_config())
+        qtbot.waitUntil(lambda: "Màn hình 1" in w.monitor_label.text(), timeout=3000)
+        two_monitors["game"] = self.M2
+        w.c.refresh_monitor()
+        text = w.monitor_label.text()
+        assert "Màn hình 2" in text and "xác nhận" in text and "Gợi ý quy đổi" in text
+        assert theme.LIGHT.warn in w.monitor_label.styleSheet()
+        assert w.view_btn.text() == "👁  Xác nhận"
+        assert w.region_btn.text().startswith("①") and w.clicks_btn.text().startswith("②")  # chưa tính là đã làm xong
+        assert w.chip_ready.text().startswith("✗") and "xác nhận" in w.chip_ready.text()
+
+    def test_confirming_the_suggestion_with_enter_uses_it(self, make_window, qtbot, two_monitors):
+        w, holder = self.window_with_overlay_log(make_window, qtbot)
+        qtbot.waitUntil(lambda: "Màn hình 1" in w.monitor_label.text(), timeout=3000)
+        two_monitors["game"] = self.M2
+        w.view_btn.click()
+        qtbot.waitUntil(lambda: "overlay" in holder, timeout=2000)
+        assert holder["plan"]["confirm"] is True and holder["plan"]["monitor"] == self.M2
+        suggestion = w.c.monitor_status.suggestion["shop_region"]
+        qtbot.keyClick(holder["overlay"].surfaces[0], Qt.Key.Key_Return)
+        assert w.c.config["shop_region"] == suggestion and not w.c.monitor_pending
+        assert not w.isMinimized() and w._overlay is None
+        assert w.view_btn.text() == "👁  Xem" and w.region_btn.text().startswith("✓")
+        assert theme.LIGHT.warn not in w.monitor_label.styleSheet()
+
+    def test_declining_the_suggestion_changes_nothing(self, make_window, qtbot, two_monitors):
+        w, holder = self.window_with_overlay_log(make_window, qtbot)
+        qtbot.waitUntil(lambda: "Màn hình 1" in w.monitor_label.text(), timeout=3000)
+        before = dict(w.c.config["shop_region"])
+        two_monitors["game"] = self.M2
+        w.view_btn.click()
+        qtbot.waitUntil(lambda: "overlay" in holder, timeout=2000)
+        qtbot.mouseClick(holder["overlay"].surfaces[0], Qt.MouseButton.LeftButton, pos=QPoint(20, 20))
+        assert w.c.monitor_pending and w.c.config["shop_region"] == before and not w.isMinimized()
+
+    def test_start_is_blocked_while_the_suggestion_is_unconfirmed(self, make_window, qtbot, two_monitors):
+        w = make_window(ready_config())
+        qtbot.waitUntil(lambda: bool(w.c.champions), timeout=3000)
+        two_monitors["game"] = self.M2
+        w.start_btn.click()
+        assert not FakeScanner.instances
+        assert "xác nhận" in w.status_label.text() and w.c.monitor_pending
+
+    def test_compact_layout_fits_with_the_long_monitor_text(self, make_window, qtbot, two_monitors):
+        w = make_window(ready_config(), size=(460, 780))
+        qtbot.waitUntil(lambda: "Màn hình 1" in w.monitor_label.text(), timeout=3000)
+        two_monitors["game"] = self.M2
+        w.c.refresh_monitor()
+        w.tabbar.setCurrentIndex(mw.PAGE_SHOP)
+        QApplication.processEvents()
+        assert w.monitor_label.wordWrap() and w.monitor_label.isVisible()
+        assert w.monitor_label.height() >= w.monitor_label.heightForWidth(w.monitor_label.width())  # xuống dòng, không bị cắt
+        for b in (w.view_btn, w.region_btn, w.clicks_btn):
+            assert b.isVisible() and b.width() <= w.width()
+
+    def test_view_button_exists_in_the_wide_layout_too(self, make_window, qtbot, two_monitors):
+        w = make_window(ready_config(shop_region=None, slot_centers=[]), size=(1100, 820))
+        assert w.view_btn.isVisible() and w.monitor_label.isVisible()
+
+    def test_view_button_in_dark_theme_keeps_the_warning_readable(self, make_window, qtbot, two_monitors):
+        w = make_window(ready_config(theme="dark"))
+        qtbot.waitUntil(lambda: "Màn hình 1" in w.monitor_label.text(), timeout=3000)
+        two_monitors["game"] = self.M2
+        w.c.refresh_monitor()
+        assert theme.DARK.warn in w.monitor_label.styleSheet()
+
+
+# --------------------------------------------------------------------------- chip chọn mùa và nhãn mùa trên thẻ
+MULTI_SEASONS = [
+    champ("Vex", 18, tier=1), champ("Zed", 18, tier=2), champ("Zed", 16, tier=3), champ("Zed", 14, tier=3),
+    champ("Sivir", 17, tier=1), champ("Garen", 7, tier=1), champ("Kha'Zix", 15, tier=3, alt="Khazix"),
+    {**champ("Darius", 18, tier=2), "id": "Maps/Shipping/Map22/Sets/TFTSetTutorial/Shop/TFTTutorial_Darius", "set": None},
+]
+
+
+class TestSeasonChips:
+    @pytest.fixture
+    def w(self, make_window, qtbot, monkeypatch):
+        monkeypatch.setattr(ctl, "load_all_champions", fake_loader(MULTI_SEASONS))
+        w = make_window(ready_config())
+        qtbot.waitUntil(lambda: bool(w.c.champions), timeout=3000)
+        return w
+
+    @staticmethod
+    def names(w):
+        return sorted(c["name"] for c in w.view.champion_model.items())
+
+    def test_old_season_button_is_gone_and_all_chip_is_on_by_default(self, w):
+        assert not hasattr(w, "old_btn")
+        assert w.season_all.text() == "Tất cả" and w.season_all.isChecked()
+        assert list(w.season_buttons) == [18, 17, 16, 15, 14, 7]  # lấy tự động từ dữ liệu, mới nhất trước
+        assert [b.text() for b in w.season_buttons.values()] == ["M18", "M17", "M16", "M15", "M14", "M7"]
+        assert not any(b.isChecked() for b in w.season_buttons.values())
+
+    def test_default_list_shows_every_champion(self, w):
+        assert self.names(w) == ["Darius", "Garen", "Kha'Zix", "Sivir", "Vex", "Zed"] and w.count_label.text() == "6/6 tướng"
+
+    def test_clicking_a_season_chip_filters_and_unchecks_all(self, w):
+        w.season_buttons[7].click()
+        assert self.names(w) == ["Garen"] and w.season_buttons[7].isChecked() and not w.season_all.isChecked()
+        assert w.count_label.text() == "1/6 tướng"
+
+    def test_several_season_chips_combine(self, w):
+        w.season_buttons[7].click()
+        w.season_buttons[17].click()
+        assert self.names(w) == ["Garen", "Sivir"]
+
+    def test_unchecking_the_last_season_chip_returns_to_all(self, w):
+        w.season_buttons[7].click()
+        w.season_buttons[7].click()
+        assert w.season_all.isChecked() and len(self.names(w)) == 6
+
+    def test_all_chip_clears_every_season_chip(self, w):
+        w.season_buttons[7].click()
+        w.season_buttons[17].click()
+        w.season_all.click()
+        assert w.season_all.isChecked() and not any(b.isChecked() for b in w.season_buttons.values()) and len(self.names(w)) == 6
+
+    def test_clicking_the_checked_all_chip_keeps_it_checked(self, w):
+        w.season_all.click()
+        assert w.season_all.isChecked()
+
+    def test_search_shows_every_season_whatever_the_chips(self, w):
+        w.season_buttons[7].click()
+        w.search.setText("zed")
+        assert self.names(w) == ["Zed"] and w.count_label.text() == "1 kết quả (tìm trong mọi mùa)"
+        w.search.clear()
+        assert self.names(w) == ["Garen"]  # bộ lọc mùa áp dụng lại
+
+    def test_search_ignores_accents_and_apostrophes(self, w):
+        w.search.setText("khazix")
+        assert self.names(w) == ["Kha'Zix"]
+        w.search.setText("KHA ZIX")
+        assert self.names(w) == ["Kha'Zix"]
+
+    def test_chip_tooltip_explains_why_it_is_ignored_while_searching(self, w):
+        w.search.setText("zed")
+        assert "tìm kiếm" in w.season_buttons[7].toolTip()
+        w.search.clear()
+        assert "mùa 7" in w.season_buttons[7].toolTip()
+
+    def test_chips_rebuild_when_a_new_season_appears(self, w):
+        before = list(w.season_buttons)
+        w.c.populate_champions(MULTI_SEASONS + [champ("Newbie", 19, tier=1)])
+        assert list(w.season_buttons) == [19, *before] and w.season_buttons[19].text() == "M19"
+
+    def test_chips_are_kept_when_the_season_list_does_not_change(self, w):
+        chips = dict(w.season_buttons)
+        w.c.populate_champions(MULTI_SEASONS)
+        assert all(w.season_buttons[s] is b for s, b in chips.items())
+
+    def test_saved_season_filter_is_applied_at_startup(self, make_window, qtbot, monkeypatch):
+        monkeypatch.setattr(ctl, "load_all_champions", fake_loader(MULTI_SEASONS))
+        w = make_window(ready_config(season_filter=[7]))
+        qtbot.waitUntil(lambda: bool(w.c.champions), timeout=3000)
+        assert self.names(w) == ["Garen"] and w.season_buttons[7].isChecked() and not w.season_all.isChecked()
+
+    def test_chips_wrap_in_the_narrow_layout_without_horizontal_overflow(self, make_window, qtbot, monkeypatch):
+        many = [champ(f"C{s}", s, tier=1) for s in range(4, 19)]
+        monkeypatch.setattr(ctl, "load_all_champions", fake_loader(many))
+        w = make_window(ready_config(), size=(460, 780))
+        qtbot.waitUntil(lambda: len(w.season_buttons) == 15, timeout=3000)
+        QApplication.processEvents()
+        assert all(b.isVisible() and b.x() + b.width() <= w.width() for b in w.season_buttons.values())
+
+    def test_card_tooltip_and_accessible_text_list_the_seasons(self, w):
+        idx = w.view.champion_model.index([c["name"] for c in w.view.champion_model.items()].index("Zed"))
+        assert "mùa 18, 16, 14" in idx.data(Qt.ItemDataRole.ToolTipRole)
+        assert "mùa 18, 16, 14" in idx.data(Qt.ItemDataRole.AccessibleTextRole)
+        darius = w.view.champion_model.index([c["name"] for c in w.view.champion_model.items()].index("Darius"))
+        assert "tutorial/sự kiện" in darius.data(Qt.ItemDataRole.ToolTipRole)
+
+    @pytest.mark.parametrize("mode", [MODE_CARDS, MODE_TEXT])
+    def test_cards_paint_with_season_labels_in_both_views(self, w, mode):
+        w.view.set_mode(mode)
+        w.resize(1100, 820)
+        QApplication.processEvents()
+        assert not w.view.viewport().grab().isNull()
+
+    def test_text_mode_rows_fit_the_viewport_without_a_horizontal_scrollbar(self, make_window, qtbot, monkeypatch):
+        """Nhiều tướng nên có thanh cuộn dọc: hàng chữ phải rộng đúng viewport (cột cost không bị thanh cuộn che, không có thanh cuộn ngang)."""
+        many = [champ(f"T{i}", 18 - i % 12, tier=1 + i % 5) for i in range(237)]
+        monkeypatch.setattr(ctl, "load_all_champions", fake_loader(many))
+        w = make_window(ready_config(), size=(1100, 900))
+        qtbot.waitUntil(lambda: len(w.c.champions) == 237, timeout=3000)
+        w.mode_btn.click()
+        QApplication.processEvents()
+        assert w.view.verticalScrollBar().isVisible() and not w.view.horizontalScrollBar().isVisible()
+        assert w.view.itemDelegate().sizeHint(None, w.view.champion_model.index(0)).width() <= w.view.viewport().width()
+
+    def test_season_label_is_drawn_on_the_card(self, w, tmp_path):
+        """Nhãn mùa được vẽ thật: thẻ Zed (3 mùa) khác thẻ không nhãn khi vẽ (kiểm tra bằng ảnh chụp danh sách)."""
+        w.resize(1100, 820)
+        QApplication.processEvents()
+        out = tmp_path / "list.png"
+        assert w.view.viewport().grab().save(str(out)) and out.stat().st_size > 3000
 
 
 class TestClose:

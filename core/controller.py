@@ -13,17 +13,20 @@ from typing import Callable
 
 from core import config as _config
 from core import license as license_check
+from core import monitors as monitors_mod
+from core import profiles as profiles_mod
 from core.build_info import app_version
 from core.champions import (
     alias_groups,
     aliases_for_targets,
+    available_seasons,
     download_template,
-    fetch_champion_list,
     is_selected,
-    latest_set,
+    load_all_champions,
     load_champion_cache,
+    matches_query,
+    merge_champions,
     normalize_locale,
-    playable_champions,
     reference_names,
     save_champion_cache,
     save_custom_template,
@@ -42,6 +45,7 @@ from core.config import (
 )
 from core.hotkey import DEFAULT_HOTKEY, register_roll_hotkey, register_toggle_hotkey
 from core.logging_setup import logger
+from core.monitors import Monitor, monitor_for_region
 from core.name_matcher import DEFAULT_NAME_THRESHOLD
 from core.ocr_check import OCR_BLOCK, OCR_IMAGE_ONLY, OcrStatus, check_ocr, start_decision
 from core.preview import PreviewResult, build_shop_preview
@@ -70,6 +74,44 @@ class Requirement:
     blocking: bool = True  # False = chỉ cảnh báo (vd OCR chưa kiểm tra), vẫn chạy được
 
 
+STATE_NONE, STATE_OK, STATE_PENDING = "none", "ok", "pending"
+SOURCE_GAME, SOURCE_REGION, SOURCE_PRIMARY = "game", "region", "primary"
+_SOURCE_NOTE = {SOURCE_GAME: "tự nhận theo cửa sổ game", SOURCE_REGION: "game chưa chạy: dùng màn hình đã cấu hình gần nhất",
+                SOURCE_PRIMARY: "game chưa chạy: dùng màn hình chính"}
+
+
+@dataclass(frozen=True)
+class MonitorStatus:
+    """Màn hình đang dùng và tình trạng bộ vùng Shop + điểm click của nó.
+
+    state: 'ok' (có bộ đã xác nhận cho màn hình này), 'pending' (chưa có: có gợi ý quy đổi từ bộ khác, chờ người dùng xác nhận,
+    chưa cho chạy), 'none' (chưa cấu hình gì). suggestion = {shop_region, slot_centers, from_name} khi pending."""
+
+    state: str
+    monitor: Monitor | None
+    source: str
+    text: str
+    suggestion: dict | None = None
+
+
+_ERROR_MARKS = ("không bắt đầu được", "không hoạt động", "không chụp được", "bị kẹt", "gặp vấn đề", "lỗi tải", "lỗi khi", "lỗi tạo")
+_WARN_MARKS = ("bỏ click", "không có mạng", "không liên lạc", "lỗi mạng", "chưa có danh sách", "chưa xác nhận")
+
+
+def classify_log(text: str) -> str:
+    """Mức của một dòng Nhật ký: 'error' (đỏ), 'warn' (cam) hay 'info'. Để thanh Nhật ký đang đóng vẫn báo được có lỗi mà không cần
+    mở ra; không đổi nội dung dòng nên các nơi gọi log() giữ nguyên."""
+    t = text.lower()
+    body = t.split("] ", 1)[1] if t.startswith("[") and "] " in t else t
+    if "hồi phục" in body or "đọc lại được" in body:  # báo đã khắc phục: không phải lỗi dù có nhắc tới lỗi cũ
+        return "info"
+    if body.startswith(("⚠", "lỗi")) or any(m in body for m in _ERROR_MARKS):
+        return "error"
+    if body.startswith("cảnh báo") or any(m in body for m in _WARN_MARKS):
+        return "warn"
+    return "info"
+
+
 def _immediate(fn: Callable[[], None]) -> None:
     fn()
 
@@ -95,7 +137,7 @@ class AppController:
         self.query = ""
         self.cost_filter: set[int] = set()  # rỗng = mọi cost
         self.only_selected = False
-        self.show_old = bool(self.config.get("show_old_sets", False))
+        self.seasons: set[int] = set(self.config.get("season_filter", []))  # bộ lọc mùa; rỗng = tất cả các mùa
 
         self.detect_image = bool(self.config.get("detect_by_image", True))
         self.detect_name = bool(self.config.get("detect_by_name", True))
@@ -111,12 +153,16 @@ class AppController:
         self.preparing = False
         self.loading_champions = False
         self._portraits_running = False
+        self._portraits_again = False  # danh sách được bổ sung khi luồng tải ảnh đang chạy: quét lại phần còn thiếu
+        self._portraits_lock = threading.Lock()
         self.closing = False
         self.ocr_status: OcrStatus | None = None
         self.ocr_summary = ""
         self.last_speed: str | None = None
         self._preview_seq = 0
         self._preview_inflight = 0
+        self.monitor_status: MonitorStatus | None = None
+        self._logged_monitor: tuple | None = None  # (khóa, trạng thái) đã ghi Nhật ký, để không lặp lại mỗi lần kiểm tra
 
     # ------------------------------------------------------------------ tiện ích
     def notify(self, event: str, **data):
@@ -127,7 +173,7 @@ class AppController:
 
     def log(self, msg: str):
         logger.info(msg)
-        self.notify("log", text=f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
+        self.notify("log", text=f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", level=classify_log(msg))
 
     def set_status(self, text: str):
         self.notify("status", text=text)
@@ -158,6 +204,7 @@ class AppController:
         self.register_hotkey()
         self.register_roll_key()
         self.load_champions_async()
+        self.refresh_monitor(preview=False)
         self.request_preview(capture_live=False)
 
     # ------------------------------------------------------------------ vùng Shop / điểm click
@@ -169,22 +216,163 @@ class AppController:
         return "Chưa cấu hình shop"
 
     def set_region(self, region: dict):
+        """Lưu vùng Shop vừa chọn. Vùng thuộc màn hình khác với bộ đang dùng thì điểm click cũ (của màn hình kia) bị bỏ."""
+        mon = monitor_for_region(monitors_mod.list_monitors(), region)
+        previous = self.config.get("active_monitor", "")
         self.config["shop_region"] = region
+        if mon is not None and previous and previous != mon.key:
+            self.config["slot_centers"] = []
+        self._store_profile(mon)
         save_config(self.config)
-        self.log(f"Đã lưu vùng shop: {region['left']},{region['top']} {region['width']}x{region['height']}")
+        self.log(f"Đã lưu vùng shop: {region['left']},{region['top']} {region['width']}x{region['height']}"
+                 + (f" ({mon.label()})" if mon else ""))
+        self._mark_active(mon)
         self.notify("config_changed")
         self.request_preview(capture_live=True)
 
     def set_click_points(self, centers: list[tuple[int, int]]):
         self.config["slot_centers"] = [list(c) for c in centers]
+        region = self.config.get("shop_region")
+        self._store_profile(monitor_for_region(monitors_mod.list_monitors(), region) if region else None)
         save_config(self.config)
         self.log(f"Đã lưu 5 điểm click: {centers}")
+        self._mark_active(monitor_for_region(monitors_mod.list_monitors(), region) if region else None)
         self.notify("config_changed")
         self.request_preview(capture_live=True)
 
     def point_inside_region(self, x: int, y: int) -> bool:
         region = self.config.get("shop_region")
         return bool(region) and not find_points_outside_region(region, [(x, y)])
+
+    # ------------------------------------------------------------------ màn hình và bộ cấu hình theo màn hình
+    def _store_profile(self, mon: Monitor | None):
+        """Ghi vùng Shop + điểm click hiện tại thành bộ của màn hình `mon` và đánh dấu đó là bộ đang dùng."""
+        region = self.config.get("shop_region")
+        if mon is None or not region:
+            return
+        centers = self.config.get("slot_centers") or []
+        self.config["monitor_profiles"][mon.key] = profiles_mod.make_profile(mon, region, centers if len(centers) == 5 else [])
+        self.config["active_monitor"] = mon.key
+
+    def _mark_active(self, mon: Monitor | None):
+        """Người dùng vừa tự chọn/xác nhận vùng Shop ở màn hình `mon`: màn hình đó thành màn hình đang dùng (không dò lại game)."""
+        if mon is None:
+            return
+        ready = len(self.config.get("slot_centers") or []) == 5
+        text = f"{mon.label()} — bộ vùng Shop vừa lưu" + ("" if ready else " — chưa đặt 5 điểm click")
+        self.monitor_status = MonitorStatus(STATE_OK, mon, SOURCE_REGION, text)
+        self._logged_monitor = (mon.key, STATE_OK)
+        self.notify("monitor_changed")
+
+    def _target_monitor(self, mons: list[Monitor]) -> tuple[Monitor, str]:
+        """Màn hình cần dùng: chứa cửa sổ game; game chưa chạy thì màn hình đã cấu hình gần nhất (nhận lại theo tên thiết bị + độ
+        phân giải nên vẫn đúng khi các màn hình bị sắp xếp lại), rồi màn hình chứa vùng Shop; không có thì màn hình chính."""
+        names = frozenset(n.lower() for n in (self.config.get("game_process_names") or []))
+        found = monitors_mod.game_monitor(names, mons) if names else None
+        if found is not None:
+            return found, SOURCE_GAME
+        active = self.config.get("active_monitor")
+        by_key = next((m for m in mons if m.key == active), None) if active else None
+        if by_key is not None:
+            return by_key, SOURCE_REGION
+        region = self.config.get("shop_region")
+        by_region = monitor_for_region(mons, region) if region else None
+        if by_region is not None:
+            return by_region, SOURCE_REGION
+        return next((m for m in mons if m.primary), mons[0]), SOURCE_PRIMARY
+
+    def _adopt_legacy_region(self, mons: list[Monitor]):
+        """Config có vùng Shop nhưng chưa có bộ nào theo màn hình (cấu hình từ bản trước): gắn nó với màn hình chứa vùng."""
+        region = self.config.get("shop_region")
+        if self.config["monitor_profiles"] or not region:
+            return
+        mon = monitor_for_region(mons, region)
+        if mon is not None:
+            self._store_profile(mon)
+            save_config(self.config)
+
+    def refresh_monitor(self, preview: bool = True) -> MonitorStatus:
+        """Nhận lại màn hình đang dùng (theo cửa sổ game) và áp đúng bộ vùng Shop + điểm click đã lưu cho nó.
+        Màn hình chưa có bộ: tạo gợi ý quy đổi nhưng KHÔNG dùng; phải được người dùng xác nhận (accept_suggestion) mới chạy."""
+        mons = monitors_mod.list_monitors()
+        if not mons:
+            status = MonitorStatus(STATE_NONE, None, "", "Không đọc được danh sách màn hình.")
+            self.monitor_status = status
+            self.notify("monitor_changed")
+            return status
+        self._adopt_legacy_region(mons)
+        mon, source = self._target_monitor(mons)
+        profiles = self.config["monitor_profiles"]
+        profile = profiles.get(mon.key)
+        switched = False
+        if profile is not None:
+            region, centers, how = profiles_mod.adapt(profile, mon)
+            if how == "moved":  # chỉ sắp xếp lại màn hình: tọa độ dịch theo, chính xác
+                profiles[mon.key] = profiles_mod.make_profile(mon, region, centers)
+                self.log(f"{mon.label()} đã đổi vị trí trên desktop: dời vùng Shop và điểm click theo.")
+            switched = (self.config.get("shop_region") != region or self.config.get("slot_centers") != centers
+                        or self.config.get("active_monitor") != mon.key)
+            if switched or how == "moved":
+                self.config["shop_region"], self.config["slot_centers"] = region, centers
+                self.config["active_monitor"] = mon.key
+                save_config(self.config)
+            ready = len(centers) == 5
+            text = f"{mon.label()} — {_SOURCE_NOTE[source]}" + ("" if ready else " — chưa đặt 5 điểm click")
+            status = MonitorStatus(STATE_OK, mon, source, text)
+        else:
+            near = profiles_mod.nearest(profiles, mon)
+            if near is None:
+                status = MonitorStatus(STATE_NONE, mon, source, f"{mon.label()} — chưa cấu hình vùng Shop")
+            else:
+                key, prof = near
+                region, centers, _ = profiles_mod.adapt(prof, mon)
+                from_name = prof.get("name") or key
+                status = MonitorStatus(
+                    STATE_PENDING, mon, source,
+                    f"{mon.label()} chưa có vùng Shop đã xác nhận. Gợi ý quy đổi từ {from_name}: bấm 'Xem và xác nhận gợi ý' "
+                    "hoặc chọn lại vùng Shop.",
+                    {"shop_region": region, "slot_centers": centers, "from_name": from_name})
+        self.monitor_status = status
+        tag = (mon.key, status.state)
+        if tag != self._logged_monitor:
+            self._logged_monitor = tag
+            self.log(f"Màn hình đang dùng: {status.text}" if status.state != STATE_PENDING else status.text)
+        self.notify("monitor_changed")
+        if switched and preview:
+            self.request_preview(capture_live=True)
+        return status
+
+    @property
+    def monitor_pending(self) -> bool:
+        return self.monitor_status is not None and self.monitor_status.state == STATE_PENDING
+
+    def accept_suggestion(self) -> bool:
+        """Người dùng xác nhận gợi ý quy đổi cho màn hình hiện tại: dùng và lưu thành bộ của màn hình đó."""
+        st = self.monitor_status
+        if st is None or st.state != STATE_PENDING or not st.suggestion or st.monitor is None:
+            return False
+        self.config["shop_region"] = dict(st.suggestion["shop_region"])
+        self.config["slot_centers"] = [list(p) for p in st.suggestion["slot_centers"]]
+        self._store_profile(st.monitor)
+        save_config(self.config)
+        self.log(f"Đã dùng vùng Shop quy đổi cho {st.monitor.label()}.")
+        self._mark_active(st.monitor)
+        self.notify("config_changed")
+        self.request_preview(capture_live=True)
+        return True
+
+    def view_plan(self) -> dict | None:
+        """Dữ liệu để vẽ overlay 'Xem trên màn hình': vùng Shop + điểm click của màn hình đang dùng (hoặc gợi ý chờ xác nhận).
+        None nếu chưa có vùng Shop nào để xem."""
+        st = self.refresh_monitor()
+        if st.state == STATE_PENDING and st.suggestion:
+            return {"region": st.suggestion["shop_region"], "centers": st.suggestion["slot_centers"], "monitor": st.monitor,
+                    "confirm": True}
+        region = self.config.get("shop_region")
+        if not region:
+            return None
+        centers = self.config.get("slot_centers") or []
+        return {"region": region, "centers": [tuple(c) for c in centers], "monitor": st.monitor, "confirm": False}
 
     # ------------------------------------------------------------------ danh sách tướng
     def load_champions_async(self):
@@ -205,16 +393,42 @@ class AppController:
         self.load_champions_async()
 
     def _fetch_champions(self):
-        try:
-            champs = fetch_champion_list(normalize_locale(self.config.get("champion_locale")))
+        """Luồng nền: nạp tướng của mọi mùa (xem champions.load_all_champions). Mỗi bước có dữ liệu mới thì đưa về luồng giao diện."""
+        locale = normalize_locale(self.config.get("champion_locale"))
+
+        def update(entries):
             try:
-                save_champion_cache(champs)
+                save_champion_cache(entries)  # tên + alias cho OCR khi offline
             except OSError as e:
                 logger.warning("Không ghi được champions_cache.json: %s", e)
-            self._post_safe(lambda: self.populate_champions(champs))
+            self._post_safe(lambda: self.populate_champions(entries, final=False))
+
+        def progress(done, total):
+            self._post_safe(lambda: self.set_status(f"Đang tải thêm các mùa cũ ({done}/{total} bản)..."))
+
+        try:
+            report = load_all_champions(locale, update, should_stop=lambda: self.closing, on_progress=progress)
         except Exception as e:
             msg = f"Lỗi tải tướng: {e}"
             self._post_safe(lambda: self._champions_failed(msg))
+            return
+        self._post_safe(lambda: self._champions_loaded(report))
+
+    def _champions_loaded(self, report):
+        """Cả đợt nạp đã xong (hoặc dừng vì offline): mở khóa nút Tải lại và báo kết quả."""
+        self.loading_champions = False
+        n = len(self.champions)
+        if report.offline:
+            self.set_status(f"Không có mạng — dùng danh sách đã lưu ({n} tướng)")
+            self.log("Không liên lạc được Data Dragon: đang dùng danh sách tướng đã lưu ở lần trước.")
+        else:
+            seasons = len(available_seasons(self.champions))
+            self.set_status(f"Đã tải {n} tướng của {seasons} mùa")
+            if report.versions_new:
+                self.log(f"Đã tải danh sách tướng: {n} tướng, {seasons} mùa ({report.versions_new} bản patch mới quét).")
+        if report.failed:
+            self.log(f"{len(report.failed)}/{report.versions_total} bản patch lỗi mạng — lần mở sau sẽ thử lại.")
+        self.notify("champions_changed")
 
     def _champions_failed(self, msg: str):
         self.loading_champions = False
@@ -222,36 +436,38 @@ class AppController:
         self.log(f"{msg} — bấm 'Tải lại danh sách' để thử lại; tướng đã chọn vẫn được giữ.")
         self.notify("champions_changed")
 
-    def populate_champions(self, entries: list[dict]):
-        """Nhận mục Data Dragon; lọc thành danh sách chọn được và khôi phục tướng đã chọn từ config."""
-        self.loading_champions = False
+    def populate_champions(self, entries: list[dict], final: bool = True):
+        """Nhận các mục Data Dragon; gộp thành thẻ (mỗi tên một thẻ, mọi mùa) và khôi phục tướng đã chọn. Gọi nhiều lần được (danh sách
+        bổ sung dần các mùa cũ): lần sau giữ nguyên lựa chọn hiện tại. final=True: đây là lần cuối, mở khóa nút Tải lại."""
+        if self.champions:
+            self._saved_selection = self.selected_names()  # giữ lựa chọn người dùng vừa tick giữa hai lần nạp
+        if final:
+            self.loading_champions = False
         self.all_entries = entries
-        self.champions = playable_champions(entries)
+        self.champions = merge_champions(entries)
         keys = selection_keys(self._saved_selection)
         self._selected = {c["name"] for c in self.champions if is_selected(c, keys)}
-        visible = self.visible()
-        self.set_status(f"Đã tải {len(visible)} tướng (mùa {latest_set(self.champions)})")
-        shown = {c["name"] for c in visible}
-        hidden = [n for n in self._selected if n not in shown]
-        if hidden:
-            hidden.sort()
-            more = "…" if len(hidden) > 6 else ""
-            self.log(f"{len(hidden)} tướng đã chọn thuộc mùa cũ đang ẩn ({', '.join(hidden[:6])}{more}) — vẫn được bắt; "
-                     "bật 'Hiện mùa cũ' để xem hoặc bỏ chọn.")
+        known = set(available_seasons(self.champions))
+        if self.seasons and not self.seasons & known:  # mùa đã lưu không còn trong dữ liệu: hiện tất cả
+            self.seasons = set()
+        else:
+            self.seasons &= known
+        self.set_status(f"Đã tải {len(self.champions)} tướng ({len(known)} mùa)")
         self.notify("champions_changed")
         self.notify("selection_changed")
         self.fetch_portraits_async()
 
     def visible(self) -> list[dict]:
-        """Tướng đang hiển thị theo mùa (chưa áp bộ lọc tìm kiếm/cost)."""
-        return visible_champions(self.champions, self.show_old)
+        """Tướng theo bộ lọc mùa (chưa áp tìm kiếm/cost)."""
+        return visible_champions(self.champions, self.seasons)
 
     def filtered(self) -> list[dict]:
-        """Danh sách hiển thị sau mọi bộ lọc: mùa, tìm kiếm (tên hoặc tên ngôn ngữ kia), cost, chỉ đã chọn."""
-        q = self.query.lower().strip()
+        """Danh sách hiển thị: ĐANG TÌM KIẾM thì tìm trong MỌI mùa (bỏ qua bộ lọc mùa; khớp tên hoặc tên ngôn ngữ kia, không phân biệt
+        dấu/hoa thường/dấu nháy), không thì theo bộ lọc mùa. Cost và 'chỉ đã chọn' luôn áp dụng."""
+        searching = self.is_searching()
         out = []
-        for c in self.visible():
-            if q and q not in c["name"].lower() and q not in c.get("alt_name", "").lower():
+        for c in (self.champions if searching else self.visible()):
+            if searching and not matches_query(c, self.query):
                 continue
             if self.cost_filter and c["tier"] not in self.cost_filter:
                 continue
@@ -259,6 +475,9 @@ class AppController:
                 continue
             out.append(c)
         return out
+
+    def is_searching(self) -> bool:
+        return bool(self.query.strip())
 
     def set_query(self, text: str):
         self.query = text
@@ -272,14 +491,26 @@ class AppController:
         self.only_selected = bool(on)
         self.notify("filter_changed")
 
-    def set_show_old(self, on: bool):
-        self.show_old = bool(on)
-        self.config["show_old_sets"] = self.show_old
+    def seasons_available(self) -> list[int]:
+        return available_seasons(self.champions)
+
+    def toggle_season(self, season: int, on: bool):
+        """Bật/tắt một mùa trong bộ lọc. Bỏ mùa cuối cùng thì trở về Tất cả."""
+        (self.seasons.add if on else self.seasons.discard)(season)
+        self._save_seasons()
+
+    def clear_seasons(self):
+        """Nút Tất cả: bỏ bộ lọc mùa."""
+        self.seasons = set()
+        self._save_seasons()
+
+    def _save_seasons(self):
+        self.config["season_filter"] = sorted(self.seasons, reverse=True)
         save_config(self.config)
         self.notify("filter_changed")
 
     def costs_available(self) -> list[int]:
-        return sorted({c["tier"] for c in self.visible()})
+        return sorted({c["tier"] for c in (self.champions if self.is_searching() else self.visible())})
 
     def is_selected(self, name: str) -> bool:
         return name in self._selected
@@ -320,21 +551,43 @@ class AppController:
         return path if path.exists() else None
 
     def fetch_portraits_async(self):
-        """Tải ngầm ảnh chân dung còn thiếu cho danh sách đang hiển thị (từng ảnh một, báo 'portrait_ready' mỗi khi xong)."""
-        todo = [(c["name"], c["image_url"]) for c in self.visible() if self.portrait_path(c) is None]
-        if not todo or self._portraits_running:
-            return
-        self._portraits_running = True
+        """Tải ngầm ảnh chân dung còn thiếu của MỌI thẻ (từng ảnh một, mùa mới nhất trước, báo portrait_ready mỗi khi xong). Ảnh lưu ở
+        data/templates/ nên lần sau không tải lại. Danh sách có thể được bổ sung (thêm mùa cũ) khi đang tải: gọi lại lúc luồng đang chạy
+        chỉ đặt cờ, luồng đó quét lại phần còn thiếu trước khi thoát (không để lọt thẻ mới giữa lúc nó sắp kết thúc)."""
+        with self._portraits_lock:
+            if self._portraits_running:
+                self._portraits_again = True
+                return
+            if not any(self.portrait_path(c) is None for c in self.champions):
+                return
+            self._portraits_running = True
+            self._portraits_again = False
 
         def work():
+            tried: set[str] = set()
+            released = False
             try:
-                for name, url in todo:
-                    if self.closing:
+                while not self.closing:
+                    todo = [c for c in sorted(self.champions, key=lambda c: -(c.get("set") or 0))
+                            if c["name"] not in tried and self.portrait_path(c) is None]
+                    if not todo:
+                        with self._portraits_lock:
+                            if self._portraits_again:
+                                self._portraits_again = False
+                                continue
+                            self._portraits_running = False
+                            released = True
                         return
-                    if download_template(name, url):
-                        self._post_safe(lambda n=name: self.notify("portrait_ready", name=n))
+                    for c in todo:
+                        if self.closing:
+                            return
+                        tried.add(c["name"])
+                        if download_template(c["name"], c["image_url"]):
+                            self._post_safe(lambda n=c["name"]: self.notify("portrait_ready", name=n))
             finally:
-                self._portraits_running = False
+                if not released:
+                    with self._portraits_lock:
+                        self._portraits_running = False
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -370,18 +623,23 @@ class AppController:
                                 if (self.detect_image or self.detect_name) else "Bật ít nhất 1 chế độ: ảnh hoặc tên",
                                 STEP_CHAMPIONS))
         region = self.config.get("shop_region")
-        reqs.append(Requirement("region", bool(region), "Đã chọn vùng Shop" if region else "Chưa chọn vùng Shop",
-                                STEP_REGION))
-        centers = self.config.get("slot_centers", [])
-        if region and len(centers) == 5:
-            outside = find_points_outside_region(region, centers)
-            if outside:
-                reqs.append(Requirement("clicks", False, f"Điểm click ô {', '.join(map(str, outside))} nằm ngoài vùng Shop",
-                                        STEP_CLICKS))
-            else:
-                reqs.append(Requirement("clicks", True, "Đã đặt 5 điểm click", STEP_CLICKS))
+        if self.monitor_pending:
+            # Bộ đã lưu thuộc màn hình khác nên chưa dùng được: chỉ hiện việc cần làm (xác nhận gợi ý hoặc chọn lại), không hiện
+            # "chưa chọn vùng / 0/5 điểm" gây hiểu nhầm.
+            reqs.append(Requirement("monitor", False, "Chưa xác nhận vùng Shop cho màn hình này", STEP_REGION))
         else:
-            reqs.append(Requirement("clicks", False, f"Mới đặt {len(centers)}/5 điểm click", STEP_CLICKS))
+            reqs.append(Requirement("region", bool(region), "Đã chọn vùng Shop" if region else "Chưa chọn vùng Shop",
+                                    STEP_REGION))
+            centers = self.config.get("slot_centers", [])
+            if region and len(centers) == 5:
+                outside = find_points_outside_region(region, centers)
+                if outside:
+                    reqs.append(Requirement("clicks", False,
+                                            f"Điểm click ô {', '.join(map(str, outside))} nằm ngoài vùng Shop", STEP_CLICKS))
+                else:
+                    reqs.append(Requirement("clicks", True, "Đã đặt 5 điểm click", STEP_CLICKS))
+            else:
+                reqs.append(Requirement("clicks", False, f"Mới đặt {len(centers)}/5 điểm click", STEP_CLICKS))
         lo, hi = (int(x) for x in NUMERIC_LIMITS["scan_interval_ms"])
         ok_interval = self.interval_value() is not None
         reqs.append(Requirement("interval", ok_interval,
@@ -415,6 +673,7 @@ class AppController:
             self.log(f"Không bắt đầu được: {e}")
             self.notify("dialog", level="error", title="Cần Key xác thực", text=str(e))
             return None
+        self.refresh_monitor()  # game có thể vừa được chuyển sang màn hình khác từ lần kiểm tra trước
         missing = self.first_missing()
         if missing is not None:
             self.notify("blocked", requirement=missing)

@@ -5,9 +5,10 @@ from PySide6.QtCore import QAbstractListModel, QModelIndex, QRect, QRectF, QSize
 from PySide6.QtGui import QColor, QFont, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QAbstractItemView, QListView, QStyle, QStyledItemDelegate
 
+from core.champions import season_label, season_tooltip
 from ui.theme import Palette, qcolor
 
-CARD_W, CARD_H = 104, 124
+CARD_W, CARD_H = 104, 140
 ROW_H = 34
 MODE_CARDS, MODE_TEXT = "cards", "text"
 
@@ -45,10 +46,10 @@ class ChampionModel(QAbstractListModel):
         if role == Qt.ItemDataRole.ToolTipRole:
             alt = champ.get("alt_name")
             extra = f" ({alt})" if alt and alt != champ["name"] else ""
-            return f"{champ['name']}{extra} — {champ['tier']} gold, mùa {champ.get('set')}"
+            return f"{champ['name']}{extra} — {champ['tier']} gold, {season_tooltip(champ)}"
         if role == Qt.ItemDataRole.AccessibleTextRole:
             state = "đã chọn" if self._c.is_selected(champ["name"]) else "chưa chọn"
-            return f"{champ['name']}, {champ['tier']} gold, {state}"
+            return f"{champ['name']}, {champ['tier']} gold, {season_tooltip(champ)}, {state}"
         return None
 
     def flags(self, index):
@@ -89,7 +90,7 @@ class ChampionDelegate(QStyledItemDelegate):
     def sizeHint(self, option, index):
         if self._view.mode == MODE_CARDS:
             return QSize(CARD_W, CARD_H)
-        return QSize(max(150, option.rect.width()), ROW_H)
+        return QSize(max(150, self._view.viewport().width() - 2), ROW_H)  # theo viewport (đã trừ thanh cuộn dọc): không sinh thanh cuộn ngang
 
     def paint(self, painter: QPainter, option, index):
         p = self.palette_
@@ -143,19 +144,26 @@ class ChampionDelegate(QStyledItemDelegate):
         painter.setPen(QPen(cost_color, 3))
         painter.drawLine(int(art.left()), int(art.bottom() + 3), int(art.right()), int(art.bottom() + 3))
 
+        painter.setPen(QColor(p.muted))
+        f = QFont(painter.font())
+        f.setPointSize(8)
+        painter.setFont(f)
+        painter.drawText(QRectF(rect.left() + 2, art.bottom() + 6, rect.width() - 4, 16),
+                         Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter, season_label(champ))
+
         painter.setPen(QColor(p.text))
         f = QFont(painter.font())
         f.setPointSize(9)
         f.setBold(selected)
         painter.setFont(f)
-        text = QRectF(rect.left() + 4, art.bottom() + 8, rect.width() - 8, 34)
+        text = QRectF(rect.left() + 4, art.bottom() + 24, rect.width() - 8, 34)
         painter.drawText(text, Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop | Qt.TextFlag.TextWordWrap,
                          champ["name"])
         if selected:
             self._badge(painter, QRectF(rect.right() - 22, rect.top() + 4, 18, 18))
 
     def _row_text_rect(self, rect):
-        return QRectF(rect.left() + 34, rect.top(), rect.width() - 80, rect.height())
+        return QRectF(rect.left() + 34, rect.top(), max(60, rect.width() - 190), rect.height())
 
     def _paint_row(self, painter, rect, champ, selected, cost_color):
         p = self.palette_
@@ -173,6 +181,13 @@ class ChampionDelegate(QStyledItemDelegate):
         painter.setFont(f)
         painter.drawText(self._row_text_rect(rect), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
                          champ["name"])
+        painter.setPen(QColor(p.muted))
+        f = QFont(painter.font())
+        f.setBold(False)
+        f.setPointSize(8)
+        painter.setFont(f)
+        painter.drawText(QRectF(rect.right() - 160, rect.top(), 112, rect.height()),
+                         Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, season_label(champ))
         painter.setPen(cost_color)
         painter.drawText(QRectF(rect.right() - 44, rect.top(), 38, rect.height()),
                          Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, f"{champ['tier']}g")
@@ -205,6 +220,9 @@ class ChampionView(QListView):
         self.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # Thanh cuộn dọc luôn hiện: bề rộng viewport không đổi khi số tướng đổi, nên lưới không phải chia lại cột mỗi lần lọc/tìm.
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         self.setResizeMode(QListView.ResizeMode.Adjust)
         self.setAccessibleName("Danh sách tướng")
         self.set_mode(MODE_CARDS)
@@ -224,8 +242,8 @@ class ChampionView(QListView):
             self.setFlow(QListView.Flow.LeftToRight)
             self.setWrapping(True)
             self.setMovement(QListView.Movement.Static)
-            self.setSpacing(2)
-            self.setGridSize(QSize(CARD_W, CARD_H))
+            self.setSpacing(0)
+            self.setGridSize(self.cell_size())
         else:
             self.setViewMode(QListView.ViewMode.ListMode)
             self.setFlow(QListView.Flow.TopToBottom)
@@ -234,6 +252,21 @@ class ChampionView(QListView):
             self.setGridSize(QSize())
         self.scheduleDelayedItemsLayout()
         self.viewport().update()
+
+    def columns(self) -> int:
+        """Số cột thẻ vừa với bề rộng hiện có (ít nhất 1)."""
+        return max(1, self.viewport().width() // CARD_W)
+
+    def cell_size(self) -> QSize:
+        """Ô lưới: chiều cao cố định, chiều rộng chia ĐỀU phần bề rộng còn lại cho các cột để thẻ lấp kín hàng (không thừa khoảng trống
+        lệch bên phải)."""
+        width = self.viewport().width()
+        return QSize(max(CARD_W, width // self.columns()) if width > 0 else CARD_W, CARD_H)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self.mode == MODE_CARDS and self.gridSize() != self.cell_size():
+            self.setGridSize(self.cell_size())  # chỉ đổi khi cột/độ rộng ô thật sự đổi: kéo cửa sổ không dựng lại gì nặng
 
     def _toggle_index(self, index):
         if not index.isValid():

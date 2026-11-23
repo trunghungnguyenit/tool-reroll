@@ -9,6 +9,8 @@ import shutil
 import sys
 from pathlib import Path, PureWindowsPath
 
+from core.profiles import valid_profile
+
 
 def app_base_dir() -> Path:
     """Thư mục gốc app — cạnh file .exe khi đóng gói PyInstaller."""
@@ -27,6 +29,8 @@ LEGACY_SHOP_PREVIEW_PATH = DATA_DIR / "shop_preview.png"  # kiểu cũ: ảnh đ
 DEFAULT_CONFIG = {
     "shop_region": None,
     "slot_centers": [],
+    "monitor_profiles": {},  # bộ vùng Shop + 5 điểm click riêng cho từng màn hình: {khóa màn hình: {name, monitor, shop_region, slot_centers}}
+    "active_monitor": "",  # khóa màn hình mà shop_region/slot_centers đang áp dụng ("" = chưa gắn với màn hình nào)
     "match_threshold": 0.72,
     "scan_interval_ms": 3,
     "buy_delay_ms": 0,
@@ -38,7 +42,7 @@ DEFAULT_CONFIG = {
     "capture_backend": "auto",  # cách chụp màn hình: auto (thử DXGI, tự quay về mss) hoặc mss
     "roll_key": "d",  # phím roll trong game: bấm thì app quét dày ~0,5 giây; "" = tắt
     "champion_locale": "vi_VN",  # ngôn ngữ danh sách tướng (vi_VN, en_US...); alias ngôn ngữ kia luôn được khớp
-    "show_old_sets": False,
+    "season_filter": [],  # các mùa đang lọc trong danh sách tướng (số mùa, vd [18, 17]); rỗng = tất cả các mùa
     "theme": "auto",  # giao diện: auto (theo Windows), light hoặc dark
     "selected_champions": [],
     "custom_templates": {},
@@ -143,7 +147,7 @@ NUMERIC_LIMITS: dict[str, tuple[float, float]] = {
     "buy_cooldown_ms": (0, 5000),
 }
 _INT_KEYS = {"scan_interval_ms", "name_scan_interval_ms", "buy_delay_ms", "buy_cooldown_ms"}
-_BOOL_KEYS = ("require_game_foreground", "show_old_sets", "detect_by_image", "detect_by_name")
+_BOOL_KEYS = ("require_game_foreground", "detect_by_image", "detect_by_name")
 _TRUE_WORDS = {"true", "yes", "on", "1", "có", "co"}
 _FALSE_WORDS = {"false", "no", "off", "0", "không", "khong"}
 _REGION_KEYS = ("left", "top", "width", "height")
@@ -261,6 +265,18 @@ def sanitize_config(config: dict) -> list[str]:
             notes.append(f"Cấu hình '{key}': {what} → {value!r}.")
         config[key] = value
 
+    seasons = config["season_filter"]
+    if isinstance(seasons, (int, str)) and not isinstance(seasons, bool):
+        seasons = [seasons]
+    nums = [_to_number(v, True) for v in seasons] if isinstance(seasons, (list, tuple)) else None
+    if nums is None:
+        use_default("season_filter", "không phải danh sách số mùa")
+    else:
+        good = sorted({n for n in nums if n is not _UNSET and n > 0}, reverse=True)
+        if good != config["season_filter"]:
+            notes.append(f"Cấu hình 'season_filter': {config['season_filter']!r} → {good!r}.")
+        config["season_filter"] = good
+
     custom = config["custom_templates"]
     if not isinstance(custom, dict):
         use_default("custom_templates", "không phải danh sách ánh xạ tên → đường dẫn")
@@ -278,6 +294,18 @@ def sanitize_config(config: dict) -> list[str]:
             config["shop_region"] = None
         else:
             config["shop_region"] = dict(zip(_REGION_KEYS, nums))
+
+    profiles = config["monitor_profiles"]
+    if not isinstance(profiles, dict):
+        use_default("monitor_profiles", "không phải danh sách ánh xạ khóa màn hình → bộ cấu hình")
+    else:
+        good = {k: v for k, v in profiles.items() if isinstance(k, str) and valid_profile(v)}
+        if len(good) != len(profiles):
+            notes.append(f"Cấu hình 'monitor_profiles': bỏ {len(profiles) - len(good)} bộ không hợp lệ — hãy chọn lại vùng Shop "
+                         "ở màn hình tương ứng.")
+        config["monitor_profiles"] = good
+    if not isinstance(config["active_monitor"], str):
+        use_default("active_monitor", "không phải chuỗi")
 
     points = config["slot_centers"]
     fixed = _sanitize_points(points)

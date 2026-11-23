@@ -11,6 +11,7 @@ import pytest  # noqa: E402
 import core.champions as champions  # noqa: E402
 import core.config as config  # noqa: E402
 import core.license as license_mod  # noqa: E402
+import core.monitors as monitors_mod  # noqa: E402
 import core.scanner as sc  # noqa: E402
 from tests.helpers import CENTERS, REGION  # noqa: E402
 
@@ -20,6 +21,18 @@ def _license_active(request, monkeypatch):
     """Máy test không có Key thật: coi như đã kích hoạt, trừ test đánh dấu @pytest.mark.real_license (kiểm tra chính giấy phép)."""
     if request.node.get_closest_marker("real_license") is None:
         monkeypatch.setattr(license_mod, "require_active", lambda: None)
+
+
+ONE_MONITOR = monitors_mod.Monitor(r"\\.\DISPLAY1", 0, 0, 1920, 1080, 100, True)
+
+
+@pytest.fixture(autouse=True)
+def _one_monitor(request, monkeypatch):
+    """Máy test có thể có nhiều màn hình hay không có game: giả lập đúng MỘT màn hình 1920x1080 và game chưa chạy, trừ test đánh dấu
+    @pytest.mark.real_monitors. Test cần cấu hình khác thì gọi lại monkeypatch.setattr(monitors_mod, 'list_monitors', ...)."""
+    if request.node.get_closest_marker("real_monitors") is None:
+        monkeypatch.setattr(monitors_mod, "list_monitors", lambda: [ONE_MONITOR])
+        monkeypatch.setattr(monitors_mod, "game_monitor", lambda names, mons: None)
 
 
 @pytest.fixture

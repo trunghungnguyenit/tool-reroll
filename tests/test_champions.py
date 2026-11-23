@@ -1,3 +1,5 @@
+import types
+
 import cv2
 import numpy as np
 import pytest
@@ -146,30 +148,129 @@ class TestSetParsing:
         assert champions.set_of(cid) == expected
 
 
-class TestPlayableAndVisible:
-    def test_tutorial_and_event_entries_are_dropped(self):
-        names = {c["name"].strip() for c in champions.playable_champions(ENTRIES)}
-        assert "Darius" not in names and "Galio" not in names
+class TestMergeChampions:
+    """Mỗi TÊN một thẻ; thẻ ghi mọi mùa tướng có mặt; tutorial/sự kiện cũng được giữ (hiện ở Tất cả, không có mùa)."""
 
-    def test_same_name_across_sets_keeps_newest_set_and_ignores_trailing_space(self):
-        graves = [c for c in champions.playable_champions(ENTRIES) if c["name"].strip() == "Graves"]
-        assert len(graves) == 1
-        assert graves[0]["set"] == 18 and graves[0]["image_url"].endswith("TFT18_Graves.png")
+    def test_same_name_across_sets_is_one_card_with_all_its_seasons(self):
+        graves = [c for c in champions.merge_champions(ENTRIES) if c["name"] == "Graves"]
+        assert len(graves) == 1 and graves[0]["sets"] == [18, 17] and graves[0]["set"] == 18
+
+    def test_card_takes_cost_and_art_from_the_newest_season(self):
+        entries = [entry(sid("TFTSet16", "TFT16_Zed"), "Zed", 3), entry(sid("TFTSet18", "TFT18_Zed"), "Zed", 2)]
+        (zed,) = champions.merge_champions(entries)
+        assert zed["tier"] == 2 and zed["image_url"].endswith("TFT18_Zed.png")
+
+    def test_trailing_space_and_case_do_not_split_a_champion(self):
+        cards = champions.merge_champions([entry(sid("TFTSet18", "a"), "Graves"), entry(sid("TFTSet17", "b"), "graves ")])
+        assert len(cards) == 1 and cards[0]["sets"] == [18, 17]
+
+    def test_event_spelling_of_the_same_name_is_merged(self):
+        """Bản sự kiện viết 'RekSai'/'Khazix' còn bản mùa viết "Rek'Sai"/"Kha'Zix": cùng một thẻ."""
+        cards = champions.merge_champions([
+            entry(sid("TFTSet18", "TFT18_RekSai"), "Rek'Sai", 1),
+            entry(sid("TFTSetEvent5YR", "TFTEvent5YR_RekSai"), "RekSai", 1, set_no=None),
+        ])
+        assert [c["name"] for c in cards] == ["Rek'Sai"] and cards[0]["sets"] == [18]
+
+    def test_champion_only_in_tutorial_has_no_season(self):
+        darius = [c for c in champions.merge_champions(ENTRIES) if c["name"] == "Darius"]
+        assert len(darius) == 1 and darius[0]["sets"] == [] and darius[0]["set"] is None
+
+    def test_champions_only_in_tutorial_or_event_are_kept(self):
+        names = {c["name"] for c in champions.merge_champions(ENTRIES)}
+        assert {"Darius", "Galio"} <= names
+
+    def test_a_set_entry_wins_over_a_tutorial_entry_of_the_same_name(self):
+        entries = [entry(sid("TFTSetTutorial", "TFTTutorial_Zed"), "Zed", 2, set_no=None), entry(sid("TFTSet17", "TFT17_Zed"), "Zed", 2)]
+        (zed,) = champions.merge_champions(entries)
+        assert zed["sets"] == [17] and zed["image_url"].endswith("TFT17_Zed.png")
+
+    def test_alt_name_is_kept_from_any_entry_that_has_it(self):
+        entries = [entry(sid("TFTSet18", "a"), "Ngộ Không", 4), entry(sid("TFTSet17", "b"), "Ngộ Không", 4, "Wukong")]
+        (card,) = champions.merge_champions(entries)
+        assert card["alt_name"] == "Wukong"
 
     def test_result_is_sorted_by_tier_then_name(self):
-        champs = champions.playable_champions(ENTRIES)
-        assert [(c["tier"], c["name"]) for c in champs] == sorted((c["tier"], c["name"]) for c in champs)
+        cards = champions.merge_champions(ENTRIES)
+        assert [(c["tier"], c["name"]) for c in cards] == sorted((c["tier"], c["name"]) for c in cards)
 
-    def test_latest_set_and_visibility(self):
-        champs = champions.playable_champions(ENTRIES)
-        assert champions.latest_set(champs) == 18
-        assert {c["name"] for c in champions.visible_champions(champs, show_old=False)} == {"Graves", "Ngộ Không"}
-        assert {c["name"] for c in champions.visible_champions(champs, show_old=True)} == {"Graves", "Ngộ Không", "Zed"}
+    def test_entries_without_a_name_are_ignored_and_input_is_not_mutated(self):
+        entries = [entry(sid("TFTSet18", "a"), "  ", 1), entry(sid("TFTSet18", "b"), "Vex", 1)]
+        before = [dict(e) for e in entries]
+        assert [c["name"] for c in champions.merge_champions(entries)] == ["Vex"]
+        assert entries == before
 
     def test_empty_input(self):
-        assert champions.playable_champions([]) == []
-        assert champions.latest_set([]) is None
-        assert champions.visible_champions([], show_old=False) == []
+        assert champions.merge_champions([]) == [] and champions.latest_set([]) is None
+        assert champions.available_seasons([]) == [] and champions.visible_champions([], set()) == []
+
+
+class TestSeasons:
+    CARDS = champions.merge_champions(ENTRIES)
+
+    def names(self, seasons):
+        return {c["name"] for c in champions.visible_champions(self.CARDS, set(seasons))}
+
+    def test_all_seasons_is_the_default_and_includes_event_only_champions(self):
+        assert self.names(set()) == {"Graves", "Ngộ Không", "Zed", "Darius", "Galio"}
+
+    def test_one_season(self):
+        assert self.names({17}) == {"Graves", "Zed"} and self.names({18}) == {"Graves", "Ngộ Không"}
+
+    def test_several_seasons_are_a_union(self):
+        assert self.names({17, 18}) == {"Graves", "Ngộ Không", "Zed"}
+
+    def test_event_only_champions_hide_once_a_season_is_chosen(self):
+        assert not self.names({18}) & {"Darius", "Galio"}
+
+    def test_unknown_season_shows_nothing(self):
+        assert self.names({3}) == set()
+
+    def test_available_seasons_newest_first_and_latest_set(self):
+        assert champions.available_seasons(self.CARDS) == [18, 17] and champions.latest_set(self.CARDS) == 18
+
+    def test_labels_are_compact(self):
+        card = lambda sets: {"sets": sets}  # noqa: E731
+        assert champions.season_label(card([18])) == "M18"
+        assert champions.season_label(card([18, 17])) == "M18 · M17"
+        assert champions.season_label(card([18, 17, 16, 15])) == "M18 · M17 +2"
+        assert champions.season_label(card([])) == "Sự kiện"
+        assert champions.season_tooltip(card([18, 15])) == "mùa 18, 15" and "tutorial" in champions.season_tooltip(card([]))
+
+
+class TestSearch:
+    CARDS = champions.merge_champions([
+        entry(sid("TFTSet18", "k"), "Kha'Zix", 3, "Khazix"), entry(sid("TFTSet17", "n"), "Ngộ Không", 4, "Wukong"),
+        entry(sid("TFTSet16", "c"), "Cát Tường", 2, "Fortune"), entry(sid("TFTSet15", "v"), "Vi", 3), entry(sid("TFTSet15", "w"), "Viego", 5),
+        entry(sid("TFTSet15", "t"), "Twisted Fate", 2),
+    ])
+
+    def found(self, query):
+        return sorted(c["name"] for c in self.CARDS if champions.matches_query(c, query))
+
+    def test_ignores_apostrophes_spaces_case_and_accents(self):
+        assert self.found("khazix") == ["Kha'Zix"] and self.found("KHA ZIX") == ["Kha'Zix"] and self.found("kha'zix") == ["Kha'Zix"]
+        assert self.found("ngo khong") == ["Ngộ Không"] and self.found("NGỘ") == ["Ngộ Không"]
+        assert self.found("twistedfate") == ["Twisted Fate"] and self.found("twisted  fate") == ["Twisted Fate"]
+
+    def test_matches_the_other_language_name(self):
+        assert self.found("wukong") == ["Ngộ Không"] and self.found("fortune") == ["Cát Tường"]
+
+    def test_matches_any_substring_not_just_the_start(self):
+        assert self.found("ie") == ["Viego"] and self.found("vi") == ["Vi", "Viego"]
+        assert "Kha'Zix" in self.found("zix") and "Cát Tường" in self.found("tuong")
+
+    def test_one_character_finds_every_card_containing_it(self):
+        assert self.found("a") == ["Cát Tường", "Kha'Zix", "Twisted Fate"]
+
+    def test_empty_or_symbol_only_query_matches_everything(self):
+        assert len(self.found("")) == len(self.CARDS) == len(self.found("   ")) == len(self.found("'-'"))
+
+    def test_no_match(self):
+        assert self.found("zzz") == []
+
+    def test_works_on_a_card_without_precomputed_keys(self):
+        assert champions.matches_query({"name": "Kha'Zix", "alt_name": ""}, "khazix")
 
 
 class TestAliases:
@@ -190,7 +291,7 @@ class TestAliases:
 
 
 class TestSelectionRestore:
-    CHAMPS = champions.playable_champions(
+    CHAMPS = champions.merge_champions(
         [
             entry(sid("TFTSet18", "a"), "Graves", 1),
             entry(sid("TFTSet18", "b"), "Ngộ Không", 4, "Wukong"),
@@ -235,71 +336,304 @@ class TestLocale:
 
 
 class FakeDdragon:
-    """Giả requests.get cho versions.json và tft-champion.json của hai ngôn ngữ."""
+    """Giả requests.get cho versions.json và tft-champion.json (hai ngôn ngữ) của nhiều patch.
 
-    def __init__(self, fail_locale=None):
-        self.urls, self.fail_locale = [], fail_locale
-        base = {
-            sid("TFTSet18", "TFT18_Wukong"): ("Wukong", "Ngộ Không", 4),
-            sid("TFTSet17", "TFT17_Wukong"): ("Wukong ", "Ngộ Không ", 4),
-            sid("TFTSetTutorial", "TFTTutorial_Darius"): ("Darius", "Darius", 2),
-            sid("TFTSet18", "TFT18_NoTier"): ("Hidden", "Hidden", None),
+    patches: {version: {id: (tên en, tên vi, tier)}}. missing: các patch trả HTTP 403 (không có dữ liệu). down: các patch lỗi mạng."""
+
+    def __init__(self, patches=None, missing=(), down=(), fail_locale=None, offline=False):
+        self.urls, self.fail_locale, self.offline = [], fail_locale, offline
+        self.missing, self.down = set(missing), set(down)
+        self.patches = patches if patches is not None else {
+            "16.23.1": {sid("TFTSet18", "TFT18_Wukong"): ("Wukong", "Ngộ Không", 4),
+                        sid("TFTSet18", "TFT18_Zed"): ("Zed", "Zed", 5),
+                        sid("TFTSetTutorial", "TFTTutorial_Darius"): ("Darius", "Darius", 2),
+                        sid("TFTSet18", "TFT18_NoTier"): ("Hidden", "Hidden", None)},
+            "15.24.1": {sid("TFTSet15", "TFT15_Wukong"): ("Wukong ", "Ngộ Không ", 3),
+                        sid("TFTSet7", "TFT7_Garen"): ("Garen", "Garen", 1)},
+            "14.24.1": {sid("TFTSet12", "TFT12_Ahri"): ("Ahri", "Ahri", 4)},
         }
-        self.data = {
-            "en_US": {k: {"name": v[0], "tier": v[2], "image": {"full": k.split("/")[-1] + ".png"}} for k, v in base.items()},
-            "vi_VN": {k: {"name": v[1], "tier": v[2], "image": {"full": k.split("/")[-1] + ".png"}} for k, v in base.items()},
-        }
+
+    def fetched(self, version):
+        return [u for u in self.urls if f"/cdn/{version}/" in u]
 
     def __call__(self, url, timeout):
         self.urls.append(url)
+        if self.offline:
+            raise requests.ConnectionError("offline")
         if url.endswith("versions.json"):
-            return FakeResponse(json_data=["16.23.1", "16.22.1", "lolpatch_3.7"])
+            return FakeResponse(json_data=[*self.patches, "12.23.1", "lolpatch_3.7"])
+        version = url.split("/cdn/")[1].split("/")[0]
         locale = url.split("/data/")[1].split("/")[0]
-        if locale == self.fail_locale:
+        if version in self.down or locale == self.fail_locale:
             raise requests.ConnectionError("down")
-        return FakeResponse(json_data={"data": self.data[locale]})
+        if version in self.missing or version not in self.patches:
+            return FakeResponse(error=requests.HTTPError("403", response=types.SimpleNamespace(status_code=403)))
+        index = 0 if locale == "en_US" else 1
+        data = {k: {"name": v[index], "tier": v[2], "image": {"full": k.split("/")[-1] + ".png"}}
+                for k, v in self.patches[version].items()}
+        return FakeResponse(json_data={"data": data})
 
 
-class TestFetch:
-    def test_fetches_both_locales_and_fills_entries(self, monkeypatch):
-        fake = FakeDdragon()
+@pytest.fixture
+def ddragon(monkeypatch):
+    def install(**kw):
+        fake = FakeDdragon(**kw)
         monkeypatch.setattr(champions.requests, "get", fake)
-        entries = champions.fetch_champion_list("vi_VN")
+        return fake
+
+    return install
+
+
+class TestVersions:
+    def test_only_tft_capable_patches_newest_first(self, ddragon):
+        ddragon(patches={"14.24.1": {}, "16.23.1": {}, "13.2.1": {}})
+        assert champions.tft_versions() == ["16.23.1", "14.24.1", "13.2.1"]  # bỏ 12.23.1 (HTTP 403) và 'lolpatch_3.7'
+
+    def test_numeric_not_text_ordering(self, ddragon):
+        ddragon(patches={"15.9.1": {}, "15.10.1": {}, "15.2.1": {}})
+        assert champions.tft_versions() == ["15.10.1", "15.9.1", "15.2.1"]
+
+
+class TestFetchVersion:
+    def test_fetches_both_locales_and_fills_each_name(self, ddragon):
+        fake = ddragon()
+        data = champions.fetch_version("16.23.1")
         assert any("/vi_VN/" in u for u in fake.urls) and any("/en_US/" in u for u in fake.urls)
-        wk = {e["id"].split("/")[-1]: e for e in entries}["TFT18_Wukong"]
-        assert wk["name"] == "Ngộ Không" and wk["alt_name"] == "Wukong" and wk["set"] == 18 and wk["tier"] == 4
-        assert wk["image_url"].endswith("/16.23.1/img/tft-champion/TFT18_Wukong.png")
+        wk = data[sid("TFTSet18", "TFT18_Wukong")]
+        assert wk["names"] == {"vi_VN": "Ngộ Không", "en_US": "Wukong"} and wk["set"] == 18 and wk["tier"] == 4
+        assert wk["image"] == "TFT18_Wukong.png"
 
-    def test_names_are_stripped_and_untiered_entries_skipped(self, monkeypatch):
-        monkeypatch.setattr(champions.requests, "get", FakeDdragon())
-        names = [e["name"] for e in champions.fetch_champion_list("vi_VN")]
-        assert "Ngộ Không " not in names and "Hidden" not in names
+    def test_names_are_stripped_and_untiered_entries_skipped(self, ddragon):
+        ddragon()
+        data = champions.fetch_version("15.24.1")
+        assert data[sid("TFTSet15", "TFT15_Wukong")]["names"] == {"vi_VN": "Ngộ Không", "en_US": "Wukong"}
+        assert sid("TFTSet18", "TFT18_NoTier") not in champions.fetch_version("16.23.1")
 
-    def test_same_name_in_both_locales_has_no_alias(self, monkeypatch):
-        monkeypatch.setattr(champions.requests, "get", FakeDdragon())
-        darius = [e for e in champions.fetch_champion_list("vi_VN") if e["name"] == "Darius"][0]
-        assert darius["alt_name"] == ""
+    def test_tutorial_entries_have_no_season(self, ddragon):
+        ddragon()
+        assert champions.fetch_version("16.23.1")[sid("TFTSetTutorial", "TFTTutorial_Darius")]["set"] is None
 
-    def test_alt_locale_failure_still_returns_list_without_aliases(self, monkeypatch):
-        monkeypatch.setattr(champions.requests, "get", FakeDdragon(fail_locale="en_US"))
-        entries = champions.fetch_champion_list("vi_VN")
-        assert entries and all(e["alt_name"] == "" for e in entries)
+    def test_http_403_means_the_patch_has_no_data(self, ddragon):
+        ddragon(missing={"14.24.1"})
+        assert champions.fetch_version("14.24.1") == {}
 
-    def test_main_locale_failure_raises(self, monkeypatch):
-        monkeypatch.setattr(champions.requests, "get", FakeDdragon(fail_locale="vi_VN"))
+    def test_other_http_errors_raise(self, monkeypatch):
+        monkeypatch.setattr(champions.requests, "get", lambda url, timeout: FakeResponse(
+            error=requests.HTTPError("500", response=types.SimpleNamespace(status_code=500))))
+        with pytest.raises(requests.HTTPError):
+            champions.fetch_version("16.23.1")
+
+    @pytest.mark.parametrize("locale", ["vi_VN", "en_US"])
+    def test_one_locale_failing_raises_instead_of_recording_half_a_patch(self, ddragon, locale):
+        ddragon(fail_locale=locale)
         with pytest.raises(requests.ConnectionError):
-            champions.fetch_champion_list("vi_VN")
+            champions.fetch_version("16.23.1")
 
-    def test_invalid_locale_falls_back_to_default_without_calling_odd_urls(self, monkeypatch):
-        fake = FakeDdragon()
-        monkeypatch.setattr(champions.requests, "get", fake)
-        champions.fetch_champion_list("../../evil")
+
+class TestCatalog:
+    def test_newer_patch_wins_whatever_the_merge_order(self):
+        old = {"A": {"names": {"vi_VN": "Cũ", "en_US": "Old"}, "tier": 1, "set": 15, "image": "old.png"}}
+        new = {"A": {"names": {"vi_VN": "Mới", "en_US": "New"}, "tier": 2, "set": 15, "image": "new.png"}}
+        for order in ((("15.2.1", old), ("16.1.1", new)), (("16.1.1", new), ("15.2.1", old))):
+            cat = champions.new_catalog()
+            for v, d in order:
+                champions.merge_version(cat, v, d)
+            assert cat["champions"]["A"]["image"] == "new.png" and cat["champions"]["A"]["version"] == "16.1.1"
+            assert sorted(cat["versions"]) == ["15.2.1", "16.1.1"]
+
+    def test_older_patch_only_adds_champions_the_newer_one_lacks(self):
+        cat = champions.new_catalog()
+        champions.merge_version(cat, "16.1.1", {"A": {"names": {"vi_VN": "a", "en_US": "a"}, "tier": 1, "set": 18, "image": "a.png"}})
+        champions.merge_version(cat, "14.1.1", {"B": {"names": {"vi_VN": "b", "en_US": "b"}, "tier": 1, "set": 12, "image": "b.png"}})
+        assert set(cat["champions"]) == {"A", "B"} and cat["champions"]["B"]["version"] == "14.1.1"
+
+    def test_entries_use_the_locale_and_the_patch_each_champion_was_found_in(self):
+        cat = champions.new_catalog()
+        champions.merge_version(cat, "14.24.1", {"X": {"names": {"vi_VN": "Ngộ Không", "en_US": "Wukong"}, "tier": 4, "set": 12, "image": "x.png"}})
+        (vi,) = champions.catalog_entries(cat, "vi_VN")
+        (en,) = champions.catalog_entries(cat, "en_US")
+        assert (vi["name"], vi["alt_name"]) == ("Ngộ Không", "Wukong") and (en["name"], en["alt_name"]) == ("Wukong", "Ngộ Không")
+        assert vi["image_url"].endswith("/cdn/14.24.1/img/tft-champion/x.png") and vi["set"] == 12
+
+    def test_same_name_in_both_languages_has_no_alias(self):
+        cat = champions.new_catalog()
+        champions.merge_version(cat, "16.1.1", {"X": {"names": {"vi_VN": "Zed", "en_US": "Zed"}, "tier": 4, "set": 18, "image": "x.png"}})
+        assert champions.catalog_entries(cat, "vi_VN")[0]["alt_name"] == ""
+
+    def test_invalid_locale_falls_back_to_default(self):
+        cat = champions.new_catalog()
+        champions.merge_version(cat, "16.1.1", {"X": {"names": {"vi_VN": "Ngộ Không", "en_US": "Wukong"}, "tier": 4, "set": 18, "image": "x.png"}})
+        assert champions.catalog_entries(cat, "../../evil")[0]["name"] == "Ngộ Không"
+
+    def sample(self):
+        cat = champions.new_catalog()
+        champions.merge_version(cat, "16.1.1", {"A": {"names": {"vi_VN": "a", "en_US": "A"}, "tier": 1, "set": 18, "image": "a.png"}})
+        return cat
+
+    def test_roundtrip(self, data_dir):
+        champions.save_catalog(self.sample())
+        loaded = champions.load_catalog()
+        assert loaded["champions"] == self.sample()["champions"] and loaded["versions"] == ["16.1.1"]
+        assert not list(data_dir.glob("*.tmp"))
+
+    def test_missing_catalog(self, data_dir):
+        assert champions.load_catalog() is None
+
+    @pytest.mark.parametrize("content", ["", "{", "[]", "null", '{"schema": 1}', '{"schema": 99, "versions": [], "champions": {"a": 1}}',
+                                         '{"schema": 1, "versions": [], "champions": {}}',
+                                         '{"schema": 1, "versions": ["x"], "champions": {"a": {}}}',
+                                         '{"schema": 1, "versions": [], "champions": {"a": {"names": {"vi_VN": 1, "en_US": "a"}, "tier": 1, "set": 1, "image": "i", "version": "1.2.3"}}}',
+                                         '{"schema": 1, "versions": [], "champions": {"a": {"names": {"vi_VN": "a", "en_US": "a"}, "tier": "1", "set": 1, "image": "i", "version": "1.2.3"}}}'])
+    def test_corrupt_or_invalid_catalog_returns_none(self, data_dir, content):
+        data_dir.mkdir(parents=True, exist_ok=True)
+        (data_dir / champions.CATALOG_NAME).write_text(content, encoding="utf-8")
+        assert champions.load_catalog() is None
+
+    def test_catalog_with_bom_is_readable(self, data_dir):
+        champions.save_catalog(self.sample())
+        path = data_dir / champions.CATALOG_NAME
+        path.write_bytes(b"\xef\xbb\xbf" + path.read_bytes())
+        assert champions.load_catalog() is not None
+
+    def test_failed_write_keeps_the_previous_catalog(self, data_dir, monkeypatch):
+        champions.save_catalog(self.sample())
+        monkeypatch.setattr(champions.os, "replace", lambda *a: (_ for _ in ()).throw(OSError("khóa")))
+        with pytest.raises(OSError):
+            champions.save_catalog({**self.sample(), "versions": ["9.9.9"]})
+        assert champions.load_catalog()["versions"] == ["16.1.1"]
+
+
+class Loader:
+    """Chạy load_all_champions và ghi lại các lần on_update / on_progress."""
+
+    def __init__(self, locale="vi_VN", **kw):
+        self.updates, self.progress = [], []
+        self.report = champions.load_all_champions(locale, lambda e: self.updates.append(e), on_progress=lambda d, n: self.progress.append((d, n)), **kw)
+
+    def names(self, i=-1):
+        return sorted({e["name"] for e in self.updates[i]})
+
+
+class TestLoadAllChampions:
+    def test_first_run_scans_every_patch_and_reports_progressively(self, data_dir, ddragon):
+        fake = ddragon()
+        run = Loader()
+        assert run.report.versions_total == 3 and run.report.versions_new == 3 and not run.report.failed and not run.report.offline
+        assert len(run.updates) == 2  # sau patch mới nhất, rồi sau khi quét xong các patch cũ
+        assert "Garen" not in run.names(0) and "Ahri" not in run.names(0)  # lúc đầu mới có mùa của patch mới nhất
+        assert {"Ahri", "Garen", "Ngộ Không", "Zed", "Darius"} <= set(run.names(-1))  # cuối cùng đủ mọi mùa, kể cả tutorial
+        assert run.progress[-1] == (2, 2) and all(fake.fetched(v) for v in ("16.23.1", "15.24.1", "14.24.1"))
+        assert not any("12.23.1" in u or "evil" in u for u in fake.urls)
+
+    def test_both_locales_are_fetched_for_every_patch(self, data_dir, ddragon):
+        fake = ddragon()
+        Loader()
+        for v in ("16.23.1", "15.24.1", "14.24.1"):
+            assert len([u for u in fake.fetched(v) if "/vi_VN/" in u]) == 1 and len([u for u in fake.fetched(v) if "/en_US/" in u]) == 1
+
+    def test_every_season_comes_through_to_cards(self, data_dir, ddragon):
+        ddragon()
+        cards = champions.merge_champions(Loader().updates[-1])
+        assert champions.available_seasons(cards) == [18, 15, 12, 7]
+        wk = [c for c in cards if c["name"] == "Ngộ Không"][0]
+        assert wk["sets"] == [18, 15] and wk["alt_name"] == "Wukong" and wk["tier"] == 4  # cost/ảnh của mùa mới nhất
+
+    def test_second_run_uses_the_cache_and_downloads_nothing_new(self, data_dir, ddragon):
+        ddragon()
+        Loader()
+        fake = ddragon()
+        run = Loader()
+        assert run.report.versions_new == 0 and fake.urls == [fake.urls[0]] and fake.urls[0].endswith("versions.json")
+        assert len(run.updates) == 1 and "Ahri" in run.names()
+
+    def test_a_new_patch_downloads_only_that_patch(self, data_dir, ddragon):
+        ddragon()
+        Loader()
+        patches = {"16.24.1": {sid("TFTSet18", "TFT18_Zed"): ("Zed", "Zed", 3)}, **FakeDdragon().patches}
+        fake = ddragon(patches=patches)
+        run = Loader()
+        assert run.report.versions_new == 1 and fake.fetched("16.24.1") and not fake.fetched("15.24.1")
+        zed = [e for e in run.updates[-1] if e["id"].endswith("TFT18_Zed")][0]
+        assert zed["tier"] == 3 and "/16.24.1/" in zed["image_url"]  # patch mới ghi đè bản cũ
+
+    def test_cached_list_is_shown_first_even_when_offline(self, data_dir, ddragon):
+        ddragon()
+        Loader()
+        ddragon(offline=True)
+        run = Loader()
+        assert run.report.offline and len(run.updates) == 1 and "Ahri" in run.names()
+
+    def test_offline_without_cache_raises(self, data_dir, ddragon):
+        ddragon(offline=True)
+        with pytest.raises(requests.ConnectionError):
+            Loader()
+
+    def test_failure_of_the_newest_patch_with_cache_falls_back_to_cache(self, data_dir, ddragon):
+        ddragon()
+        Loader()
+        patches = {"16.24.1": {}, **FakeDdragon().patches}
+        ddragon(patches=patches, down={"16.24.1"})
+        run = Loader()
+        assert run.report.offline and "Ahri" in run.names()
+
+    def test_old_patch_network_failure_is_reported_and_retried_next_time(self, data_dir, ddragon):
+        ddragon(down={"15.24.1"})
+        run = Loader()
+        assert run.report.failed == ["15.24.1"] and "Garen" not in run.names() and "Ahri" in run.names()
+        fake = ddragon()
+        again = Loader()
+        assert again.report.versions_new == 1 and fake.fetched("15.24.1") and not fake.fetched("14.24.1") and "Garen" in again.names()
+
+    def test_patch_with_no_data_is_recorded_so_it_is_not_requested_again(self, data_dir, ddragon):
+        ddragon(missing={"14.24.1"})
+        Loader()
+        fake = ddragon(missing={"14.24.1"})
+        Loader()
+        assert not fake.fetched("14.24.1") and "14.24.1" in champions.load_catalog()["versions"]
+
+    def test_stop_request_ends_the_scan_without_losing_what_is_loaded(self, data_dir, ddragon):
+        ddragon()
+        stop, updates = {"now": False}, []
+
+        def on_update(entries):
+            updates.append(entries)
+            stop["now"] = True  # người dùng đóng app ngay sau khi có patch mới nhất
+
+        report = champions.load_all_champions("vi_VN", on_update, should_stop=lambda: stop["now"])
+        assert len(updates) == 1 and report.versions_new == 1 and "Ahri" not in {e["name"] for e in updates[0]}
+        assert champions.load_catalog()["versions"] == ["16.23.1"]
+
+    def test_invalid_locale_does_not_reach_odd_urls(self, data_dir, ddragon):
+        fake = ddragon()
+        Loader("../../evil")
         assert all("evil" not in u for u in fake.urls)
 
-    def test_end_to_end_pipeline_shows_only_newest_set(self, monkeypatch):
-        monkeypatch.setattr(champions.requests, "get", FakeDdragon())
-        champs = champions.playable_champions(champions.fetch_champion_list("vi_VN"))
-        assert [c["name"] for c in champs] == ["Ngộ Không"] and champs[0]["set"] == 18
+    def test_en_us_locale_shows_english_names_first(self, data_dir, ddragon):
+        ddragon()
+        run = Loader("en_US")
+        wk = [e for e in run.updates[-1] if e["id"].endswith("TFT18_Wukong")][0]
+        assert (wk["name"], wk["alt_name"]) == ("Wukong", "Ngộ Không")
+
+    def test_corrupt_catalog_is_rebuilt_from_the_network(self, data_dir, ddragon):
+        data_dir.mkdir(parents=True, exist_ok=True)
+        (data_dir / champions.CATALOG_NAME).write_text("{hỏng", encoding="utf-8")
+        ddragon()
+        run = Loader()
+        assert run.report.versions_new == 3 and "Ahri" in run.names()
+
+    def test_reference_names_cover_every_season_and_both_languages(self, data_dir, ddragon):
+        ddragon()
+        names = champions.reference_names(Loader().updates[-1])
+        assert {"Ngộ Không", "Wukong", "Garen", "Ahri", "Darius"} <= set(names)
+
+    def test_catalog_is_saved_incrementally_during_a_long_scan(self, data_dir, ddragon, monkeypatch):
+        many = {f"15.{i}.1": {sid("TFTSet15", f"TFT15_C{i}"): (f"C{i}", f"C{i}", 1)} for i in range(1, 26)}
+        ddragon(patches={"16.1.1": {sid("TFTSet18", "TFT18_X"): ("X", "X", 1)}, **many})
+        saves = []
+        real = champions.save_catalog
+        monkeypatch.setattr(champions, "save_catalog", lambda cat: (saves.append(len(cat["versions"])), real(cat))[1])
+        Loader()
+        assert len(saves) >= 4 and saves[-1] == 26
 
 
 class TestTemplateCacheNaming:

@@ -15,8 +15,10 @@ import pytest
 import core.config as config
 import core.controller as ctl
 import core.champions as champions
+import core.monitors as monitors_mod
+from core.monitors import Monitor
 from core.preview import PreviewResult
-from tests.fakes import BAD_OCR, ENTRIES, OK_OCR, FakeScanner, champ, plan
+from tests.fakes import BAD_OCR, ENTRIES, OK_OCR, FakeScanner, fake_loader, champ, plan
 
 
 class Events:
@@ -53,7 +55,7 @@ def hotkeys():
 @pytest.fixture
 def make(data_dir, monkeypatch, ev, hotkeys):
     FakeScanner.instances = []
-    monkeypatch.setattr(ctl, "fetch_champion_list", lambda locale=None: ENTRIES)
+    monkeypatch.setattr(ctl, "load_all_champions", fake_loader(ENTRIES))
     kb = types.SimpleNamespace(add_hotkey=lambda *a, **k: hotkeys.added.append(a),
                                unhook_all=lambda: setattr(hotkeys, "unhooked", True))
 
@@ -559,21 +561,14 @@ class TestChampionList:
         k = make(saved_config={"selected_champions": ["Vex", " zed "]})
         k.populate_champions(ENTRIES)
         assert k.is_selected("Vex") and k.is_selected("Zed") and not k.is_selected("Graves")
-        assert ev.last("status")["text"] == "Đã tải 5 tướng (mùa 18)"
-        assert k.selected_names() == ["Vex", "Graves", "Zed", "Ahri", "Jinx"][:0] + [
-            c["name"] for c in k.champions if c["name"] in {"Vex", "Zed"}]
+        assert ev.last("status")["text"] == "Đã tải 6 tướng (2 mùa)"
+        assert k.selected_names() == [c["name"] for c in k.champions if c["name"] in {"Vex", "Zed"}]
         assert ev.of("selection_changed") and ev.of("champions_changed")
 
-    def test_old_set_selection_announced(self, make, ev):
+    def test_selected_champion_of_an_old_season_is_restored_and_visible_by_default(self, make):
         k = make(saved_config={"selected_champions": ["Sivir"]})
         k.populate_champions(ENTRIES)
-        assert "1 tướng đã chọn thuộc mùa cũ đang ẩn (Sivir)" in ev.logs()
-
-    def test_show_old_toggle_adds_old_set_and_is_saved(self, loaded, data_dir):
-        assert "Sivir" not in [x["name"] for x in loaded.filtered()]
-        loaded.set_show_old(True)
-        assert "Sivir" in [x["name"] for x in loaded.filtered()]
-        assert json.loads((data_dir / "config.json").read_text(encoding="utf-8"))["show_old_sets"] is True
+        assert k.is_selected("Sivir") and "Sivir" in [x["name"] for x in k.filtered()]
 
     def test_search_matches_name_and_other_language_name(self, loaded):
         loaded.set_query("ze")
@@ -592,12 +587,12 @@ class TestChampionList:
     def test_cost_filter_and_available_costs(self, loaded):
         assert loaded.costs_available() == [1, 2, 4, 5]
         loaded.toggle_cost(1, True)
-        assert {x["name"] for x in loaded.filtered()} == {"Vex", "Graves"}
+        assert {x["name"] for x in loaded.filtered()} == {"Vex", "Graves", "Sivir"}
         loaded.toggle_cost(5, True)
-        assert {x["name"] for x in loaded.filtered()} == {"Vex", "Graves", "Jinx"}
+        assert {x["name"] for x in loaded.filtered()} == {"Vex", "Graves", "Sivir", "Jinx"}
         loaded.toggle_cost(1, False)
         loaded.toggle_cost(5, False)
-        assert len(loaded.filtered()) == 5
+        assert len(loaded.filtered()) == 6
 
     def test_only_selected_filter_and_combination(self, loaded):
         loaded.set_selected("Zed", True)
@@ -613,16 +608,16 @@ class TestChampionList:
         loaded.set_query("a")
         loaded.toggle_cost(1, True)
         loaded.set_only_selected(True)
-        loaded.set_show_old(True)
+        loaded.toggle_season(17, True)
         assert len(ev.of("filter_changed")) == before + 4
 
-    def test_select_all_respects_current_filter_and_hidden_old_set(self, loaded):
+    def test_select_all_respects_current_filter(self, loaded):
         loaded.toggle_cost(1, True)
         loaded.select_all_visible()
-        assert {x for x in ("Vex", "Graves") if loaded.is_selected(x)} == {"Vex", "Graves"}
-        assert not loaded.is_selected("Zed") and not loaded.is_selected("Sivir")
+        assert {x for x in ("Vex", "Graves", "Sivir") if loaded.is_selected(x)} == {"Vex", "Graves", "Sivir"}
+        assert not loaded.is_selected("Zed")
         loaded.deselect_all_visible()
-        assert not any(loaded.is_selected(n) for n in ("Vex", "Graves"))
+        assert not any(loaded.is_selected(n) for n in ("Vex", "Graves", "Sivir"))
 
     def test_selection_is_not_lost_when_filtered_out(self, loaded):
         loaded.set_selected("Jinx", True)
@@ -646,13 +641,13 @@ class TestChampionList:
     def test_fetch_failure_reports_and_reload_retries(self, make, ev, monkeypatch):
         attempts = []
 
-        def fetch(locale=None):
+        def fetch(locale, on_update, should_stop=lambda: False, on_progress=None):
             attempts.append(1)
             if len(attempts) == 1:
                 raise ConnectionError("mất mạng")
-            return ENTRIES
+            return fake_loader(ENTRIES)(locale, on_update, should_stop, on_progress)
 
-        monkeypatch.setattr(ctl, "fetch_champion_list", fetch)
+        monkeypatch.setattr(ctl, "load_all_champions", fetch)
         k = make()
         k.load_champions_async()
         assert wait_for(lambda: "Lỗi tải tướng: mất mạng" in ev.last("status")["text"])
@@ -675,12 +670,8 @@ class TestChampionList:
 
     @pytest.mark.parametrize("ok", [True, False])
     def test_fetch_finishing_when_ui_is_gone_does_not_crash_the_thread(self, make, ok, monkeypatch):
-        def fetch(locale=None):
-            if ok:
-                return ENTRIES
-            raise ConnectionError("x")
-
-        monkeypatch.setattr(ctl, "fetch_champion_list", fetch)
+        monkeypatch.setattr(ctl, "load_all_champions",
+                            fake_loader(ENTRIES) if ok else fake_loader(ENTRIES, fail=ConnectionError("x")))
         k = make(post=lambda fn: (_ for _ in ()).throw(RuntimeError("main thread is not in main loop")))
         errors = []
 
@@ -810,8 +801,8 @@ class TestPortraits:
         monkeypatch.setattr(ctl, "download_template", fake)
         k = make()
         k.populate_champions(ENTRIES)
-        assert wait_for(lambda: len(ev.of("portrait_ready")) == 5)
-        assert sorted(got) == ["Ahri", "Graves", "Jinx", "Vex", "Zed"] and "Sivir" not in got  # mùa cũ đang ẩn
+        assert wait_for(lambda: len(ev.of("portrait_ready")) == 6)
+        assert sorted(got) == ["Ahri", "Graves", "Jinx", "Sivir", "Vex", "Zed"]  # mọi thẻ, kể cả mùa cũ
         got.clear()
         k.fetch_portraits_async()  # đã có hết: không tải lại
         time.sleep(0.1)
@@ -942,3 +933,514 @@ class TestLicenseSummary:
         monkeypatch.setattr(ctl.license_check, "machine_code", lambda: calls.append(1) or "AAAA")
         s = make().license_summary()
         assert "machine_code" not in s and calls == [] and s["reason"] == "Chưa kích hoạt."
+
+
+# ----------------------------------------------------------------------------- màn hình và bộ cấu hình theo màn hình
+M1 = Monitor(r"\\.\DISPLAY1", 0, 0, 1920, 1080, 100, True)
+M2 = Monitor(r"\\.\DISPLAY2", 1920, 0, 2560, 1440, 150)
+REGION1 = {"left": 360, "top": 900, "width": 1200, "height": 160}
+POINTS1 = [(450 + i * 230, 1000) for i in range(5)]
+REGION2 = {"left": 2640, "top": 1180, "width": 1600, "height": 213}
+POINTS2 = [(2780 + i * 300, 1300) for i in range(5)]
+
+
+class TestMonitorProfiles:
+    """Mỗi màn hình có bộ vùng Shop + 5 điểm click riêng; tự nhận màn hình theo cửa sổ game; màn hình chưa có bộ thì chỉ GỢI Ý
+    quy đổi và bắt xác nhận (chưa cho chạy)."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, monkeypatch):
+        self.mons = [M1, M2]
+        self.game = None  # None = game chưa chạy; hoặc Monitor đang chứa cửa sổ game
+        self.previews = []
+        monkeypatch.setattr(monitors_mod, "list_monitors", lambda: list(self.mons))
+        monkeypatch.setattr(monitors_mod, "game_monitor", lambda names, mons: self.game)
+
+        def fake(region, centers, capture_live=True):
+            self.previews.append((region, centers, capture_live))
+            return PreviewResult(None, False, "")
+
+        monkeypatch.setattr(ctl, "build_shop_preview", fake)
+
+    def configured(self, c):
+        """Đã cấu hình trên màn hình 1 (bằng thao tác thật của người dùng)."""
+        c.set_region(dict(REGION1))
+        c.set_click_points(POINTS1)
+        return c
+
+    def on_monitor2(self, c):
+        """Cấu hình thêm cho màn hình 2 (sau màn hình 1)."""
+        c.set_region(dict(REGION2))
+        c.set_click_points(POINTS2)
+
+    # --- lưu theo màn hình
+    def test_set_region_and_points_create_the_profile_of_that_monitor(self, c, data_dir):
+        self.configured(c)
+        saved = json.loads((data_dir / "config.json").read_text(encoding="utf-8"))
+        prof = saved["monitor_profiles"][M1.key]
+        assert saved["active_monitor"] == M1.key and prof["monitor"] == M1.rect
+        assert prof["shop_region"] == REGION1 and prof["slot_centers"] == [list(p) for p in POINTS1]
+        assert prof["name"] == M1.label()
+
+    def test_region_chosen_on_the_second_monitor_gets_its_own_profile_and_drops_the_other_points(self, c):
+        self.configured(c)
+        c.set_region(dict(REGION2))
+        assert c.config["active_monitor"] == M2.key and c.config["slot_centers"] == []  # điểm cũ thuộc màn hình 1
+        assert set(c.config["monitor_profiles"]) == {M1.key, M2.key}
+        assert c.config["monitor_profiles"][M1.key]["slot_centers"] == [list(p) for p in POINTS1]  # bộ của màn hình 1 còn nguyên
+
+    def test_repicking_the_region_on_the_same_monitor_keeps_the_points(self, c):
+        self.configured(c)
+        c.set_region({**REGION1, "left": 400})
+        assert len(c.config["slot_centers"]) == 5 and c.config["monitor_profiles"][M1.key]["shop_region"]["left"] == 400
+
+    def test_setting_a_region_marks_that_monitor_active_even_if_the_game_is_elsewhere(self, c):
+        self.game = M2
+        c.set_region(dict(REGION1))
+        assert c.monitor_status.monitor == M1 and c.monitor_status.state == ctl.STATE_OK
+
+    def test_legacy_config_without_profiles_is_adopted_by_the_monitor_holding_the_region(self, make, data_dir):
+        k = make({"coords_version": config.COORDS_VERSION, "shop_region": dict(REGION1),
+                  "slot_centers": [list(p) for p in POINTS1]})
+        st = k.refresh_monitor(preview=False)
+        assert st.state == ctl.STATE_OK and st.monitor == M1 and st.source == ctl.SOURCE_REGION
+        assert set(k.config["monitor_profiles"]) == {M1.key} and k.config["active_monitor"] == M1.key
+        assert json.loads((data_dir / "config.json").read_text(encoding="utf-8"))["monitor_profiles"]
+
+    def test_profiles_survive_a_restart(self, make):
+        self.configured(make())
+        again = make()
+        assert again.config["monitor_profiles"][M1.key]["shop_region"] == REGION1
+
+    # --- tự nhận màn hình
+    def test_game_on_another_monitor_switches_to_that_monitors_saved_profile(self, c):
+        self.configured(c)
+        self.on_monitor2(c)
+        self.game = M1
+        st = c.refresh_monitor()
+        assert st.state == ctl.STATE_OK and st.source == ctl.SOURCE_GAME and st.monitor == M1
+        assert c.config["shop_region"] == REGION1 and [tuple(p) for p in c.config["slot_centers"]] == POINTS1
+        assert c.config["active_monitor"] == M1.key and "Màn hình 1" in st.text
+        self.game = M2
+        c.refresh_monitor()
+        assert c.config["shop_region"] == REGION2 and [tuple(p) for p in c.config["slot_centers"]] == POINTS2
+
+    def test_switching_requests_a_fresh_preview_and_logs_once(self, c, ev):
+        self.configured(c)
+        self.on_monitor2(c)
+        self.previews.clear()
+        ev.items.clear()
+        self.game = M1
+        c.refresh_monitor()
+        c.refresh_monitor()
+        c.refresh_monitor()
+        assert ev.logs().count("Màn hình đang dùng:") == 1
+        assert wait_for(lambda: len(self.previews) == 1) and self.previews[0][0] == REGION1 and self.previews[0][2] is True
+
+    def test_same_monitor_does_not_request_preview_again(self, c):
+        self.configured(c)
+        wait_for(lambda: len(self.previews) >= 2)
+        self.previews.clear()
+        c.refresh_monitor()
+        c.refresh_monitor()
+        assert self.previews == []
+
+    def test_game_not_running_follows_the_saved_region(self, c):
+        self.configured(c)
+        st = c.refresh_monitor()
+        assert st.source == ctl.SOURCE_REGION and st.monitor == M1 and "game chưa chạy" in st.text
+
+    def test_nothing_saved_and_game_not_running_falls_back_to_the_primary_monitor(self, c):
+        st = c.refresh_monitor()
+        assert st.state == ctl.STATE_NONE and st.monitor == M1 and st.source == ctl.SOURCE_PRIMARY
+        assert "chưa cấu hình" in st.text and not c.monitor_pending
+
+    def test_unreadable_monitor_list_does_not_block_anything(self, c, monkeypatch):
+        monkeypatch.setattr(monitors_mod, "list_monitors", lambda: [])
+        st = c.refresh_monitor()
+        assert st.state == ctl.STATE_NONE and st.monitor is None and not c.monitor_pending
+        assert all(r.key != "monitor" for r in c.requirements())
+
+    # --- màn hình chưa có bộ: gợi ý + xác nhận
+    def test_monitor_without_a_profile_gets_a_scaled_suggestion_and_is_not_used(self, c):
+        self.configured(c)
+        self.game = M2
+        st = c.refresh_monitor()
+        assert st.state == ctl.STATE_PENDING and st.monitor == M2 and c.monitor_pending
+        assert M1.label() in st.text and "xác nhận" in st.text
+        sug = st.suggestion
+        r = sug["shop_region"]
+        assert M2.left <= r["left"] and r["left"] + r["width"] <= M2.left + M2.width and sug["from_name"] == M1.label()
+        assert all(r["left"] <= x < r["left"] + r["width"] and r["top"] <= y < r["top"] + r["height"] for x, y in sug["slot_centers"])
+        assert c.config["shop_region"] == REGION1  # gợi ý CHƯA được dùng
+
+    def test_pending_blocks_start_and_points_to_the_region_step(self, c, ev):
+        ready(c)
+        c.refresh_monitor(preview=False)  # nhận vùng cũ vào màn hình 1
+        self.game = M2
+        c.start()
+        blocked = ev.last("blocked")["requirement"]
+        assert blocked.key == "monitor" and blocked.step == ctl.STEP_REGION and "xác nhận" in blocked.text
+        assert not FakeScanner.instances and not c.preparing
+
+    def test_pending_requirement_replaces_the_stale_region_and_click_rows(self, c):
+        ready(c)
+        c.refresh_monitor(preview=False)
+        self.game = M2
+        c.refresh_monitor()
+        by = {r.key: r for r in c.requirements()}
+        assert not by["monitor"].ok and by["monitor"].step == ctl.STEP_REGION
+        assert "region" not in by and "clicks" not in by  # vùng cũ thuộc màn hình khác: không hiện "đã chọn" hay "chưa chọn"
+        assert len(by["monitor"].text) <= 50  # đủ ngắn để chip "Sẵn sàng" ở bố cục hẹp không bị cắt
+
+    def test_accepting_the_suggestion_uses_and_saves_it_as_the_monitors_profile(self, c, ev, data_dir):
+        self.configured(c)
+        self.game = M2
+        expected = c.refresh_monitor().suggestion
+        assert c.accept_suggestion() is True
+        assert c.config["shop_region"] == expected["shop_region"] and c.config["active_monitor"] == M2.key
+        assert M2.key in c.config["monitor_profiles"] and not c.monitor_pending
+        assert c.monitor_status.state == ctl.STATE_OK and ev.of("config_changed")
+        saved = json.loads((data_dir / "config.json").read_text(encoding="utf-8"))
+        assert saved["monitor_profiles"][M2.key]["shop_region"] == expected["shop_region"]
+        assert "Đã dùng vùng Shop quy đổi" in ev.logs()
+        assert wait_for(lambda: any(p[0] == expected["shop_region"] for p in self.previews))
+
+    def test_after_accepting_the_monitor_requirement_is_gone_and_start_is_possible(self, c):
+        ready(c, names="Vex")
+        c.refresh_monitor(preview=False)
+        self.game = M2
+        c.refresh_monitor()
+        assert not c.ready()
+        c.accept_suggestion()
+        assert c.ready() and all(r.key != "monitor" for r in c.requirements())
+
+    def test_accept_without_a_pending_suggestion_does_nothing(self, c):
+        assert c.accept_suggestion() is False
+        self.configured(c)
+        c.refresh_monitor()
+        assert c.accept_suggestion() is False
+
+    def test_picking_the_region_by_hand_resolves_the_pending_state(self, c):
+        self.configured(c)
+        self.game = M2
+        c.refresh_monitor()
+        c.set_region(dict(REGION2))
+        assert not c.monitor_pending and c.config["active_monitor"] == M2.key and c.config["slot_centers"] == []
+
+    def test_changing_resolution_on_the_same_monitor_needs_confirmation(self, c):
+        self.configured(c)
+        self.mons = [Monitor(M1.device, 0, 0, 2560, 1440, 100, True), M2]
+        st = c.refresh_monitor()
+        assert st.state == ctl.STATE_PENDING and st.monitor.width == 2560
+        assert st.suggestion["shop_region"]["width"] == round(1560 * 1440 / 1080) - round(360 * 1440 / 1080)
+
+    def test_changing_only_the_windows_scale_changes_nothing(self, c, ev):
+        self.configured(c)
+        self.mons = [Monitor(M1.device, 0, 0, 1920, 1080, 150, True), M2]
+        ev.items.clear()
+        st = c.refresh_monitor()
+        assert st.state == ctl.STATE_OK and c.config["shop_region"] == REGION1 and not c.monitor_pending
+        assert "đổi vị trí" not in ev.logs()
+
+    def test_rearranging_monitors_moves_the_saved_profile_with_it(self, c, ev, data_dir):
+        self.on_monitor2(c)
+        self.mons = [Monitor(M2.device, -2560, 0, 2560, 1440, 150), M1]  # màn hình 2 giờ nằm bên TRÁI màn hình chính
+        st = c.refresh_monitor()
+        assert st.state == ctl.STATE_OK
+        assert c.config["shop_region"]["left"] == REGION2["left"] - 1920 - 2560
+        assert tuple(c.config["slot_centers"][0]) == (POINTS2[0][0] - 1920 - 2560, POINTS2[0][1])
+        assert c.config["monitor_profiles"][M2.key]["monitor"]["left"] == -2560
+        assert "đã đổi vị trí" in ev.logs()
+        assert json.loads((data_dir / "config.json").read_text(encoding="utf-8"))["shop_region"]["left"] < 0
+
+    def test_a_disconnected_monitor_makes_the_region_fall_back_to_the_primary_with_a_suggestion(self, c):
+        self.on_monitor2(c)
+        self.mons = [M1]  # màn hình 2 đã rút
+        st = c.refresh_monitor()
+        assert st.state == ctl.STATE_PENDING and st.monitor == M1 and st.source == ctl.SOURCE_PRIMARY
+
+    def test_start_re_detects_the_monitor_before_checking_requirements(self, c):
+        self.configured(c)
+        self.on_monitor2(c)  # bộ đang dùng là của màn hình 2
+        ready(c)  # chế độ/tướng; ready() ghi vùng cũ nên đặt lại bộ của màn hình 2 ngay sau đó
+        c.config["shop_region"], c.config["slot_centers"] = dict(REGION2), [list(p) for p in POINTS2]
+        c.config["active_monitor"] = M2.key
+        self.game = M1  # người chơi vừa chuyển game sang màn hình 1
+        plan = c._validate_start()
+        assert plan is not None and plan["region"] == REGION1 and plan["centers"] == POINTS1
+
+    # --- xem trên màn hình
+    def test_view_plan_of_a_configured_monitor(self, c):
+        self.configured(c)
+        assert c.view_plan() == {"region": REGION1, "centers": POINTS1, "monitor": M1, "confirm": False}
+
+    def test_view_plan_without_points_has_an_empty_list(self, c):
+        c.set_region(dict(REGION1))
+        assert c.view_plan()["centers"] == []
+
+    def test_view_plan_of_a_pending_monitor_is_the_suggestion_to_confirm(self, c):
+        self.configured(c)
+        self.game = M2
+        plan = c.view_plan()
+        assert plan["confirm"] is True and plan["monitor"] == M2 and plan["region"] == c.monitor_status.suggestion["shop_region"]
+
+    def test_view_plan_without_any_region_is_none(self, c):
+        assert c.view_plan() is None
+
+    def test_monitor_events_reach_the_ui(self, c, ev):
+        c.refresh_monitor()
+        assert ev.of("monitor_changed")
+
+    def test_start_up_detects_the_monitor_and_logs_it(self, make, ev):
+        self.configured(make())
+        fresh = make()  # mở lại app
+        ev.items.clear()
+        fresh.start_up()
+        assert fresh.monitor_status is not None and "Màn hình đang dùng:" in ev.logs()
+
+
+# ----------------------------------------------------------------------------- chọn mùa và tìm kiếm trong mọi mùa
+MULTI = [
+    champ("Vex", 18, tier=1), champ("Zed", 18, tier=2), champ("Zed", 16, tier=3), champ("Zed", 14, tier=3),
+    champ("Sivir", 17, tier=1), champ("Ngộ Không", 12, tier=4, alt="Wukong"), champ("Ngộ Không", 18, tier=4, alt="Wukong"),
+    champ("Kha'Zix", 15, tier=3, alt="Khazix"), champ("Garen", 7, tier=1),
+    {**champ("Darius", 18, tier=2), "id": "Maps/Shipping/Map22/Sets/TFTSetTutorial/Shop/TFTTutorial_Darius", "set": None},
+]
+
+
+class TestSeasonsAndSearch:
+    @pytest.fixture
+    def k(self, make):
+        k = make()
+        k.populate_champions(MULTI)
+        return k
+
+    def names(self, k):
+        return sorted(c["name"] for c in k.filtered())
+
+    def test_one_card_per_name_with_every_season_listed(self, k):
+        zed = [c for c in k.champions if c["name"] == "Zed"]
+        assert len(zed) == 1 and zed[0]["sets"] == [18, 16, 14] and zed[0]["tier"] == 2  # cost của mùa mới nhất
+        assert k.seasons_available() == [18, 17, 16, 15, 14, 12, 7]
+
+    def test_default_is_every_season_including_event_only_champions(self, k):
+        assert k.seasons == set() and self.names(k) == sorted(c["name"] for c in k.champions) and "Darius" in self.names(k)
+
+    def test_choosing_a_season_filters_to_that_season(self, k):
+        k.toggle_season(7, True)
+        assert self.names(k) == ["Garen"]
+
+    def test_choosing_several_seasons_is_a_union(self, k):
+        k.toggle_season(7, True)
+        k.toggle_season(12, True)
+        assert self.names(k) == ["Garen", "Ngộ Không"]
+
+    def test_unchoosing_the_last_season_goes_back_to_all(self, k):
+        k.toggle_season(7, True)
+        k.toggle_season(7, False)
+        assert k.seasons == set() and len(self.names(k)) == len(k.champions)
+
+    def test_all_button_clears_the_filter(self, k):
+        k.toggle_season(7, True)
+        k.toggle_season(12, True)
+        k.clear_seasons()
+        assert k.seasons == set() and len(self.names(k)) == len(k.champions)
+
+    def test_season_filter_is_saved_and_restored(self, make, data_dir):
+        k = make()
+        k.populate_champions(MULTI)
+        k.toggle_season(16, True)
+        k.toggle_season(7, True)
+        assert json.loads((data_dir / "config.json").read_text(encoding="utf-8"))["season_filter"] == [16, 7]
+        again = make()
+        again.populate_champions(MULTI)
+        assert again.seasons == {16, 7} and self.names(again) == ["Garen", "Zed"]
+
+    def test_saved_seasons_missing_from_the_data_are_dropped(self, make):
+        k = make(saved_config={"season_filter": [3, 7]})
+        k.populate_champions(MULTI)
+        assert k.seasons == {7}
+        k2 = make(saved_config={"season_filter": [3, 4]})
+        k2.populate_champions(MULTI)
+        assert k2.seasons == set() and len(self.names(k2)) == len(k2.champions)
+
+    def test_costs_available_follow_the_season_filter(self, k):
+        k.toggle_season(7, True)
+        assert k.costs_available() == [1]
+
+    # --- tìm kiếm: luôn tìm trong MỌI mùa
+    def test_search_ignores_the_season_filter(self, k):
+        k.toggle_season(7, True)
+        assert self.names(k) == ["Garen"]
+        k.set_query("ng")
+        assert self.names(k) == ["Ngộ Không"]  # không thuộc mùa 7 nhưng vẫn hiện
+        k.set_query("")
+        assert self.names(k) == ["Garen"]  # xóa ô tìm: bộ lọc mùa áp dụng lại
+
+    def test_search_finds_a_champion_of_a_season_that_is_not_selected(self, k):
+        k.toggle_season(18, True)
+        k.set_query("garen")
+        assert self.names(k) == ["Garen"]
+
+    def test_search_finds_event_only_champions_too(self, k):
+        k.toggle_season(18, True)
+        k.set_query("darius")
+        assert self.names(k) == ["Darius"]
+
+    def test_search_ignores_accents_apostrophes_and_spaces(self, k):
+        for q in ("khazix", "KHA ZIX", "kha'zix", "kha zix"):
+            k.set_query(q)
+            assert self.names(k) == ["Kha'Zix"], q
+        k.set_query("ngo khong")
+        assert self.names(k) == ["Ngộ Không"]
+
+    def test_search_matches_the_other_language_name(self, k):
+        k.set_query("wukong")
+        assert self.names(k) == ["Ngộ Không"]
+
+    def test_search_still_respects_cost_and_only_selected(self, k):
+        k.set_query("z")
+        assert self.names(k) == ["Kha'Zix", "Zed"]
+        k.toggle_cost(3, True)
+        assert self.names(k) == ["Kha'Zix"]
+        k.toggle_cost(3, False)
+        k.set_selected("Zed", True)
+        k.set_only_selected(True)
+        assert self.names(k) == ["Zed"]
+
+    def test_symbol_only_query_does_not_hide_everything(self, k):
+        k.set_query("'")
+        assert not k.is_searching() or len(self.names(k)) == len(k.champions)
+
+    def test_is_searching_ignores_blank_text(self, k):
+        k.set_query("   ")
+        assert not k.is_searching() and len(self.names(k)) == len(k.champions)
+
+    def test_select_all_selects_the_search_results_of_every_season(self, k):
+        k.toggle_season(7, True)
+        k.set_query("z")
+        k.select_all_visible()
+        assert k.is_selected("Zed") and k.is_selected("Kha'Zix") and not k.is_selected("Garen")
+
+    def test_selection_survives_season_changes(self, k):
+        k.set_selected("Garen", True)
+        k.toggle_season(18, True)  # Garen không còn hiện
+        assert "Garen" not in self.names(k) and k.is_selected("Garen") and "Garen" in k.selected_names()
+
+
+class TestProgressiveLoading:
+    """Danh sách được nạp dần: catalog đã lưu → patch mới nhất → các mùa cũ. Mỗi bước nạp lại danh sách mà không mất lựa chọn."""
+
+    def test_repopulating_keeps_what_the_user_ticked_in_between(self, make):
+        k = make()
+        k.populate_champions(MULTI[:3], final=False)
+        k.set_selected("Vex", True)
+        k.populate_champions(MULTI, final=True)
+        assert k.is_selected("Vex") and len(k.champions) > 2
+
+    def test_unlocks_reload_only_when_the_whole_load_is_done(self, make):
+        k = make()
+        k.loading_champions = True
+        k.populate_champions(MULTI[:2], final=False)
+        assert k.loading_champions is True
+        k.populate_champions(MULTI, final=True)
+        assert k.loading_champions is False
+
+    def test_full_load_reports_season_count(self, make, ev, monkeypatch):
+        from core.champions import LoadReport
+
+        monkeypatch.setattr(ctl, "load_all_champions", fake_loader(MULTI, LoadReport(94, 94)))
+        k = make()
+        k.load_champions_async()
+        assert wait_for(lambda: not k.loading_champions and bool(k.champions))
+        assert ev.last("status")["text"] == "Đã tải 7 tướng của 7 mùa" and "94 bản patch mới quét" in ev.logs()
+
+    def test_offline_with_saved_list_says_so(self, make, ev, monkeypatch):
+        from core.champions import LoadReport
+
+        monkeypatch.setattr(ctl, "load_all_champions", fake_loader(MULTI, LoadReport(offline=True)))
+        k = make()
+        k.load_champions_async()
+        assert wait_for(lambda: not k.loading_champions and bool(k.champions))
+        assert "Không có mạng — dùng danh sách đã lưu (7 tướng)" in ev.last("status")["text"] and "đã lưu ở lần trước" in ev.logs()
+
+    def test_failed_patches_are_reported(self, make, ev, monkeypatch):
+        from core.champions import LoadReport
+
+        monkeypatch.setattr(ctl, "load_all_champions", fake_loader(MULTI, LoadReport(94, 90, failed=["15.1.1", "15.2.1"])))
+        k = make()
+        k.load_champions_async()
+        assert wait_for(lambda: not k.loading_champions and bool(k.champions))
+        assert "2/94 bản patch lỗi mạng" in ev.logs()
+
+    def test_progress_text_reaches_the_status_line(self, make, ev, monkeypatch):
+        from core.champions import LoadReport
+
+        def loader(locale, on_update, should_stop=lambda: False, on_progress=None):
+            on_update(MULTI[:3])
+            on_progress(10, 93)
+            on_update(MULTI)
+            return LoadReport(94, 94)
+
+        monkeypatch.setattr(ctl, "load_all_champions", loader)
+        k = make()
+        k.load_champions_async()
+        assert wait_for(lambda: not k.loading_champions and len(k.champions) > 3)
+        assert any("(10/93 bản)" in d["text"] for d in ev.of("status"))
+
+    def test_locale_from_config_is_passed_to_the_loader(self, make, monkeypatch):
+        seen = []
+
+        def loader(locale, on_update, should_stop=lambda: False, on_progress=None):
+            seen.append(locale)
+            on_update(MULTI)
+            from core.champions import LoadReport
+            return LoadReport()
+
+        monkeypatch.setattr(ctl, "load_all_champions", loader)
+        k = make(saved_config={"champion_locale": "en_US"})
+        k.load_champions_async()
+        assert wait_for(lambda: seen) and seen == ["en_US"]
+
+    def test_catalog_entries_also_feed_the_ocr_reference_names(self, make):
+        k = make()
+        k.populate_champions(MULTI)
+        names, groups = k.reference()
+        assert {"Wukong", "Ngộ Không", "Garen", "Darius", "Kha'Zix"} <= set(names) and ["Ngộ Không", "Wukong"] in groups
+
+
+class TestPortraitsAllSeasons:
+    def test_downloads_every_card_newest_season_first_and_only_once(self, make, ev, monkeypatch):
+        got = []
+
+        def fake(name, url):
+            got.append(name)
+            return None  # tải lỗi: không được thử lại vô hạn
+
+        monkeypatch.setattr(ctl, "download_template", fake)
+        k = make()
+        k.populate_champions(MULTI)
+        assert wait_for(lambda: not k._portraits_running)
+        assert sorted(got) == sorted(c["name"] for c in k.champions) and len(got) == len(set(got))
+        sets = [next(c for c in k.champions if c["name"] == n)["set"] or 0 for n in got]
+        assert sets == sorted(sets, reverse=True)  # mùa mới nhất trước
+
+    def test_cards_added_by_a_later_update_are_fetched_too(self, make, ev, monkeypatch):
+        got = []
+
+        def fake(name, url):
+            got.append(name)
+            p = champions.template_path(name, url)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(b"x")
+            return p
+
+        monkeypatch.setattr(ctl, "download_template", fake)
+        k = make()
+        k.populate_champions(MULTI[:2], final=False)
+        assert wait_for(lambda: not k._portraits_running)
+        k.populate_champions(MULTI, final=True)
+        assert wait_for(lambda: not k._portraits_running)
+        assert {"Garen", "Ngộ Không", "Kha'Zix"} <= set(got)
+        assert got.count("Vex") == 1 and got.count("Garen") == 1  # cái đã có ảnh không tải lại, cái mới tải đúng một lần

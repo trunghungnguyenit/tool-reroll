@@ -1,6 +1,7 @@
 """Bản giả dùng chung cho test điều phối/giao diện (không phụ thuộc Tk hay Qt)."""
 
 import core.ocr_check as oc
+from core.champions import LoadReport
 
 
 class FakeScanner:
@@ -46,3 +47,15 @@ ENTRIES = [champ("Vex", tier=1), champ("Zed", tier=2), champ("Graves", tier=1), 
 
 OK_OCR = oc.OcrStatus(True, "winocr", ["en-US"])
 BAD_OCR = oc.OcrStatus(False, "winocr", [], detail="Thiếu pack ngôn ngữ", hints=["Add-WindowsCapability demo"])
+
+
+def fake_loader(entries, report=None, fail=None):
+    """Thay core.champions.load_all_champions: không mạng; gọi on_update(entries) rồi trả báo cáo (hoặc ném `fail`)."""
+
+    def loader(locale, on_update, should_stop=lambda: False, on_progress=None):
+        if fail is not None:
+            raise fail
+        on_update(entries)
+        return report or LoadReport(versions_total=1, versions_new=1)
+
+    return loader

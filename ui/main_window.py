@@ -3,7 +3,7 @@
 Bố cục: thanh điều khiển cố định ở trên (Bắt đầu/Dừng + các chip trạng thái), thân có hai kiểu tự đổi theo bề rộng:
 rộng  = hai vùng làm việc cạnh nhau (Tướng | Sẵn sàng + Vùng Shop + Nâng cao),
 hẹp   = một cột với thanh tab ở dưới (Tướng / Vùng Shop / Chạy), vùng chạm lớn.
-Khung Nhật ký luôn hiện ở dưới cùng."""
+Thanh Nhật ký ở dưới cùng, mặc định ĐÓNG (một dòng: tiêu đề + số dòng mới + dòng mới nhất), bấm để mở."""
 
 
 from PIL import Image
@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -40,7 +41,7 @@ from core.single_instance import APP_TITLE
 from ui import overlay as overlay_mod
 from ui import theme
 from ui.champion_view import MODE_CARDS, MODE_TEXT, ChampionView
-from ui.widgets import ElidedButton, FlowLayout, Switch
+from ui.widgets import ElidedButton, ElidedLabel, FlowLayout, Switch
 
 COMPACT_BELOW = 900  # px: hẹp hơn thì dùng bố cục một cột
 HYSTERESIS = 40
@@ -48,6 +49,8 @@ PAGE_CHAMPIONS, PAGE_SHOP, PAGE_RUN = 0, 1, 2
 STEP_TO_PAGE = {ctl.STEP_CHAMPIONS: PAGE_CHAMPIONS, ctl.STEP_REGION: PAGE_SHOP, ctl.STEP_CLICKS: PAGE_SHOP,
                 ctl.STEP_SETTINGS: PAGE_RUN, ctl.STEP_OCR: PAGE_RUN}
 MAX_LOG_LINES = 500
+RIGHT_W = 320  # cột phải (bố cục rộng): hẹp cố định để khung chọn tướng chiếm phần còn lại
+LOG_OPEN_H, LOG_OPEN_H_COMPACT = 120, 96
 
 
 class UiPoster(QObject):
@@ -67,12 +70,12 @@ class UiPoster(QObject):
         fn()
 
 
-def make_card(title: str | None = None) -> tuple[QFrame, QVBoxLayout]:
+def make_card(title: str | None = None, margins=(10, 8, 10, 8), spacing=6) -> tuple[QFrame, QVBoxLayout]:
     card = QFrame()
     card.setProperty("card", True)
     lay = QVBoxLayout(card)
-    lay.setContentsMargins(14, 12, 14, 12)
-    lay.setSpacing(8)
+    lay.setContentsMargins(*margins)
+    lay.setSpacing(spacing)
     if title:
         head = QLabel(title)
         head.setObjectName("heading")
@@ -92,14 +95,35 @@ def set_prop(widget: QWidget, name: str, value):
         repolish(widget)
 
 
-def filter_button(text: str, tip: str = "") -> QToolButton:
+def filter_button(text: str, tip: str = "", pill: bool = False) -> QToolButton:
+    """Nút lọc dạng viên thuốc; pill=True là cỡ nhỏ (cao ~22px) cho hàng lọc cost/mùa."""
     b = QToolButton()
     b.setText(text)
     b.setCheckable(True)
     b.setProperty("filter", True)
+    if pill:
+        b.setProperty("pill", True)
     b.setCursor(Qt.CursorShape.PointingHandCursor)
     if tip:
         b.setToolTip(tip)
+    return b
+
+
+def small_button(text: str, tip: str = "") -> QPushButton:
+    b = QPushButton(text)
+    b.setProperty("small", True)
+    if tip:
+        b.setToolTip(tip)
+    return b
+
+
+def section_button(text: str, checked: bool) -> QPushButton:
+    """Tiêu đề bấm để thu/mở một khối (▾ mở, ▸ thu), chữ căn trái, cả hàng là vùng bấm; văn bản do bên gọi đặt lại khi trạng thái đổi."""
+    b = QPushButton(text)
+    b.setProperty("section", True)
+    b.setCheckable(True)
+    b.setChecked(checked)
+    b.setCursor(Qt.CursorShape.PointingHandCursor)
     return b
 
 
@@ -167,8 +191,8 @@ class MainWindow(QMainWindow):
         self.compact_pages = [QWidget(), QWidget(), QWidget()]
         for page in self.compact_pages:
             lay = QVBoxLayout(page)
-            lay.setContentsMargins(8, 8, 8, 8)
-            lay.setSpacing(8)
+            lay.setContentsMargins(6, 6, 6, 6)
+            lay.setSpacing(6)
             scroll = QScrollArea()
             scroll.setWidgetResizable(True)
             scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -182,8 +206,8 @@ class MainWindow(QMainWindow):
         self.right_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.right_col = QWidget()
         self.right_lay = QVBoxLayout(self.right_col)
-        self.right_lay.setContentsMargins(8, 8, 8, 8)
-        self.right_lay.setSpacing(8)
+        self.right_lay.setContentsMargins(6, 6, 6, 6)
+        self.right_lay.setSpacing(6)
         self.right_scroll.setWidget(self.right_col)
 
         outer.addWidget(self._build_log())
@@ -191,28 +215,31 @@ class MainWindow(QMainWindow):
     def _build_topbar(self) -> QFrame:
         bar = QFrame()
         bar.setObjectName("topbar")
-        lay = QVBoxLayout(bar)
-        lay.setContentsMargins(14, 10, 14, 10)
-        lay.setSpacing(8)
-        row = QHBoxLayout()
-        title = QLabel("TFT Auto Buy")
-        title.setObjectName("title")
-        row.addWidget(title)
-        row.addStretch(1)
+        self.top_grid = QGridLayout(bar)
+        self.top_grid.setContentsMargins(12, 6, 12, 6)
+        self.top_grid.setHorizontalSpacing(10)
+        self.top_grid.setVerticalSpacing(4)
+        self.title_label = QLabel("TFT Auto Buy")
+        self.title_label.setObjectName("title")
+
+        self.top_right = QWidget()
+        right = QHBoxLayout(self.top_right)
+        right.setContentsMargins(0, 0, 0, 0)
+        right.setSpacing(10)
         self.hotkey_label = QLabel("")
         self.hotkey_label.setProperty("muted", True)
-        row.addWidget(self.hotkey_label)
+        right.addWidget(self.hotkey_label)
         self.start_btn = QPushButton("")
         self.start_btn.setProperty("primary", True)
-        self.start_btn.setMinimumHeight(44)
-        self.start_btn.setMinimumWidth(190)
+        self.start_btn.setMinimumHeight(36)
+        self.start_btn.setMinimumWidth(170)
         self.start_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.start_btn.setAccessibleName("Bắt đầu hoặc dừng quét")
         self.start_btn.clicked.connect(lambda: self.c.toggle())
-        row.addWidget(self.start_btn)
-        lay.addLayout(row)
+        right.addWidget(self.start_btn)
 
-        chips = FlowLayout(hspacing=6, vspacing=6)
+        self.chips_box = QWidget()
+        chips = FlowLayout(self.chips_box, hspacing=6, vspacing=4)
         self.chip_ready = self._chip("")
         self.chip_selected = self._chip("")
         self.chip_ocr = self._chip("OCR: chưa kiểm tra")
@@ -223,8 +250,30 @@ class MainWindow(QMainWindow):
         self.status_label = QLabel("Sẵn sàng")
         self.status_label.setProperty("muted", True)
         chips.addWidget(self.status_label)
-        lay.addLayout(chips)
+        self._top_compact: bool | None = None
+        self._place_topbar(False)
         return bar
+
+    def _place_topbar(self, compact: bool):
+        """Rộng: MỘT hàng (tên | chip | phím + nút Bắt đầu). Hẹp: tên + nút ở hàng trên, chip xuống hàng dưới."""
+        if compact == self._top_compact:
+            return
+        self._top_compact = compact
+        g = self.top_grid
+        for w in (self.title_label, self.top_right, self.chips_box):
+            g.removeWidget(w)
+        for col in range(3):
+            g.setColumnStretch(col, 0)
+        if compact:
+            g.addWidget(self.title_label, 0, 0)
+            g.addWidget(self.top_right, 0, 1, Qt.AlignmentFlag.AlignRight)
+            g.addWidget(self.chips_box, 1, 0, 1, 2)
+            g.setColumnStretch(0, 1)
+        else:
+            g.addWidget(self.title_label, 0, 0)
+            g.addWidget(self.chips_box, 0, 1)
+            g.addWidget(self.top_right, 0, 2, Qt.AlignmentFlag.AlignRight)
+            g.setColumnStretch(1, 1)
 
     @staticmethod
     def _chip(text: str) -> QLabel:
@@ -237,138 +286,219 @@ class MainWindow(QMainWindow):
     def _build_champion_panel(self) -> QWidget:
         card, lay = make_card()
         card.setObjectName("champ_card")
-        head = QHBoxLayout()
+        # Hàng đầu: tiêu đề + đếm | ô tìm kiếm | Dạng chữ (rộng: một hàng; hẹp: ô tìm xuống hàng dưới)
+        self.champ_title = QWidget()
+        title_lay = QHBoxLayout(self.champ_title)
+        title_lay.setContentsMargins(0, 0, 0, 0)
+        title_lay.setSpacing(8)
         heading = QLabel("Chọn tướng cần bắt")
         heading.setObjectName("heading")
-        head.addWidget(heading)
+        title_lay.addWidget(heading)
         self.count_label = QLabel("")
         self.count_label.setProperty("muted", True)
-        head.addWidget(self.count_label)
-        head.addStretch(1)
-        self.mode_btn = QPushButton("Dạng chữ")
-        self.mode_btn.setMinimumWidth(96)
-        self.mode_btn.setToolTip("Chuyển giữa thẻ có ảnh và danh sách chữ gọn")
+        title_lay.addWidget(self.count_label)
+        self.mode_btn = small_button("Dạng chữ", "Chuyển giữa thẻ có ảnh và danh sách chữ gọn")
+        self.mode_btn.setMinimumWidth(84)
         self.mode_btn.clicked.connect(self._toggle_view_mode)
-        head.addWidget(self.mode_btn)
-        lay.addLayout(head)
-
         self.search = QLineEdit()
-        self.search.setPlaceholderText("Tìm tướng (Ctrl+F) — gõ tên tiếng Việt hoặc tiếng Anh")
+        self.search.setPlaceholderText("Tìm tướng (Ctrl+F) — tên tiếng Việt/Anh, mọi mùa")
         self.search.setClearButtonEnabled(True)
+        self.search.setMinimumWidth(120)
         self.search.setAccessibleName("Tìm tướng")
         self.search.textChanged.connect(lambda t: self.c.set_query(t))
-        lay.addWidget(self.search)
+        self.head_grid = QGridLayout()
+        self.head_grid.setContentsMargins(0, 0, 0, 0)
+        self.head_grid.setHorizontalSpacing(8)
+        self.head_grid.setVerticalSpacing(4)
+        lay.addLayout(self.head_grid)
+        self._head_compact: bool | None = None
+        self._place_champ_head(False)
 
-        filt = FlowLayout(hspacing=6, vspacing=6)
+        # MỘT hàng lọc gồm cost, Đã chọn và các chip mùa (cùng cỡ nhỏ) để tiết kiệm chiều cao
+        filt = FlowLayout(hspacing=4, vspacing=4)
+        self.filter_row = filt
         self.cost_buttons: dict[int, QToolButton] = {}
         for tier in range(1, 6):
-            b = filter_button(f"{tier}g", f"Chỉ hiện tướng {tier} gold")
+            b = filter_button(f"{tier}g", f"Chỉ hiện tướng {tier} gold", pill=True)
             b.toggled.connect(lambda on, t=tier: self.c.toggle_cost(t, on))
             self.cost_buttons[tier] = b
             filt.addWidget(b)
-        self.only_sel_btn = filter_button("Đã chọn", "Chỉ hiện tướng đang tick (kể cả tướng mùa cũ đang ẩn không tính)")
+        self.only_sel_btn = filter_button("Đã chọn", "Chỉ hiện tướng đang tick", pill=True)
         self.only_sel_btn.toggled.connect(lambda on: self.c.set_only_selected(on))
-        self.old_btn = filter_button("Mùa cũ", "Hiện cả tướng các mùa trước")
-        self.old_btn.toggled.connect(lambda on: self.c.set_show_old(on))
         filt.addWidget(self.only_sel_btn)
-        filt.addWidget(self.old_btn)
         lay.addLayout(filt)
+        # Chip mùa: Tất cả + một chip cho mỗi mùa có trong Data Dragon (dựng lại khi danh sách mùa đổi). Chọn nhiều mùa được.
+        self.season_all: QToolButton | None = None
+        self.season_buttons: dict[int, QToolButton] = {}
+        self._season_widgets: list[QWidget] = []
+        self._rebuild_season_chips()
 
         self.view = ChampionView(self.c, self.palette_)
         self.view.setMinimumHeight(110)
         self.view.toggled.connect(lambda *_: None)
         lay.addWidget(self.view, 1)
 
-        actions = FlowLayout(hspacing=6, vspacing=6)
+        # Một hàng dưới khung: thao tác chọn + cách nhận diện (2 công tắc) + ô tên gõ tay ẩn sau nút
+        actions = FlowLayout(hspacing=6, vspacing=4)
         for text, fn in (("Chọn tất cả", lambda: self.c.select_all_visible()),
                          ("Bỏ chọn", lambda: self.c.deselect_all_visible()),
                          ("Upload ảnh", self._upload),
                          ("Tải lại", lambda: self.c.reload_champions())):
-            b = QPushButton(text)
+            b = small_button(text)
             b.clicked.connect(lambda _=False, f=fn: f())
             actions.addWidget(b)
-        lay.addLayout(actions)
-
-        src = QFrame()
-        src_lay = QVBoxLayout(src)
-        src_lay.setContentsMargins(0, 4, 0, 0)
-        src_lay.setSpacing(6)
-        label = QLabel("Cách nhận diện tướng trong shop")
-        label.setObjectName("heading")
-        src_lay.addWidget(label)
-        switches = FlowLayout(hspacing=18, vspacing=4)
-        src_lay.addLayout(switches)
-        self.sw_image = Switch("Bắt theo ảnh")
-        self.sw_name = Switch("Bắt theo tên (OCR)")
+        how = QLabel("Nhận diện:")
+        how.setProperty("muted", True)
+        actions.addWidget(how)
+        self.sw_image = Switch("Ảnh")
+        self.sw_name = Switch("Tên (OCR)")
+        self.sw_image.setToolTip("Bắt theo ảnh chân dung tướng")
+        self.sw_name.setToolTip("Bắt theo tên đọc bằng OCR")
         for sw in (self.sw_image, self.sw_name):
-            switches.addWidget(sw)
+            actions.addWidget(sw)
         self.sw_image.toggled.connect(self._on_mode_changed)
         self.sw_name.toggled.connect(self._on_mode_changed)
+        self.manual_btn = filter_button("Tên gõ tay ▸", "Gõ thêm tên tướng cho OCR (phẩy hoặc xuống dòng)", pill=True)
+        self.manual_btn.toggled.connect(self._toggle_manual)
+        actions.addWidget(self.manual_btn)
+        lay.addLayout(actions)
         self.manual = QPlainTextEdit()
         self.manual.setPlaceholderText("Tên gõ tay cho OCR (phẩy hoặc xuống dòng), vd: Aatrox, Yasuo, Jinx")
-        self.manual.setFixedHeight(48)
+        self.manual.setFixedHeight(44)
         self.manual.setAccessibleName("Tên tướng gõ tay")
         self.manual.textChanged.connect(self._on_manual_changed)
-        src_lay.addWidget(self.manual)
-        lay.addWidget(src)
+        self.manual.setVisible(False)
+        lay.addWidget(self.manual)
         return card
+
+    def _place_champ_head(self, compact: bool):
+        if compact == self._head_compact:
+            return
+        self._head_compact = compact
+        g = self.head_grid
+        for w in (self.champ_title, self.search, self.mode_btn):
+            g.removeWidget(w)
+        for col in range(3):
+            g.setColumnStretch(col, 0)
+        if compact:
+            g.addWidget(self.champ_title, 0, 0)
+            g.addWidget(self.mode_btn, 0, 2)
+            g.addWidget(self.search, 1, 0, 1, 3)
+            g.setColumnStretch(1, 1)
+        else:
+            g.addWidget(self.champ_title, 0, 0)
+            g.addWidget(self.search, 0, 1)
+            g.addWidget(self.mode_btn, 0, 2)
+            g.setColumnStretch(1, 1)
+
+    def _toggle_manual(self, on: bool):
+        self.manual.setVisible(on)
+        self.manual_btn.setText("Tên gõ tay ▾" if on else "Tên gõ tay ▸")
+
+    def _sync_manual_visibility(self):
+        """Đã có tên gõ tay thì hiện ô nhập ngay (tránh ẩn mất tên đang dùng); chưa có thì ẩn sau nút."""
+        if self.c.manual_names.strip() and not self.manual_btn.isChecked():
+            self.manual_btn.setChecked(True)
 
     def _build_ready_card(self) -> QFrame:
-        card, lay = make_card("Sẵn sàng chạy?")
-        self.ready_lay = QVBoxLayout()
-        self.ready_lay.setSpacing(2)
-        lay.addLayout(self.ready_lay)
+        card, lay = make_card()
+        self.ready_toggle = section_button("▾  Sẵn sàng chạy?", True)
+        self.ready_toggle.toggled.connect(self._on_ready_toggled)
+        lay.addWidget(self.ready_toggle)
+        self.ready_body = QWidget()
+        self.ready_lay = QVBoxLayout(self.ready_body)
+        self.ready_lay.setContentsMargins(0, 0, 0, 0)
+        self.ready_lay.setSpacing(0)
+        lay.addWidget(self.ready_body)
         self.ready_rows: dict[str, QPushButton] = {}
+        self._ready_state: bool | None = None  # đã đủ điều kiện chưa ở lần cập nhật trước (để tự thu/mở khi đổi trạng thái)
         return card
 
+    def _on_ready_toggled(self, on: bool):
+        self.ready_body.setVisible(on)
+        self._refresh_ready_header()
+
+    def _refresh_ready_header(self):
+        ready = self.c.first_missing() is None
+        open_ = self.ready_toggle.isChecked()
+        todo = sum(1 for r in self.c.requirements() if not r.ok and r.blocking)
+        text = "✓ Sẵn sàng chạy" if ready else f"✗ Chưa sẵn sàng · còn {todo} việc"
+        self.ready_toggle.setText(("▾  " if open_ else "▸  ") + text)
+        set_prop(self.ready_toggle, "tone", "ok" if ready else "fail")
+
     def _build_shop_card(self) -> QFrame:
-        card, lay = make_card("Vùng Shop và điểm click")
-        hint = QLabel("Làm lần lượt 2 bước. Kéo khung CHỈ quanh hàng 5 thẻ tướng; điểm click đặt giữa ảnh tướng.")
-        hint.setWordWrap(True)
-        hint.setProperty("muted", True)
-        lay.addWidget(hint)
-        self.region_btn = QPushButton("①  Chọn vùng Shop")
+        card, lay = make_card()
+        self.shop_toggle = section_button("▾  Vùng Shop và điểm click", True)
+        self.shop_toggle.toggled.connect(self._on_shop_toggled)
+        lay.addWidget(self.shop_toggle)
+        self.shop_body = QWidget()
+        body = QVBoxLayout(self.shop_body)
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(4)
+        lay.addWidget(self.shop_body)
+
+        steps = FlowLayout(hspacing=6, vspacing=4)
+        self.region_btn = small_button("①  Vùng Shop", "Bước 1: kéo khung CHỈ quanh hàng 5 thẻ tướng")
         self.region_btn.setProperty("step", True)
         self.region_btn.clicked.connect(lambda: self._calibrate_region())
-        self.clicks_btn = QPushButton("②  Đặt 5 điểm click")
+        self.clicks_btn = small_button("②  5 điểm click", "Bước 2: click lần lượt vào giữa ảnh tướng của 5 ô")
         self.clicks_btn.setProperty("step", True)
         self.clicks_btn.clicked.connect(lambda: self._calibrate_clicks())
-        lay.addWidget(self.region_btn)
-        lay.addWidget(self.clicks_btn)
+        self.view_btn = small_button("👁  Xem", "Hiện khung vùng Shop và 5 chấm đỏ đánh số ngay trên màn hình thật để đối chiếu với game")
+        self.view_btn.clicked.connect(lambda: self._view_on_screen())
+        for b in (self.region_btn, self.clicks_btn, self.view_btn):
+            steps.addWidget(b)
+        body.addLayout(steps)
+        self.monitor_label = QLabel("")
+        self.monitor_label.setWordWrap(True)
+        self.monitor_label.setProperty("muted", True)
+        body.addWidget(self.monitor_label)
         self.region_label = QLabel("")
         self.region_label.setProperty("muted", True)
         self.region_label.setWordWrap(True)
-        lay.addWidget(self.region_label)
+        body.addWidget(self.region_label)
         self.preview = QLabel("Chưa có ảnh — chọn vùng Shop để xem trước")
         self.preview.setObjectName("preview")
         self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview.setMinimumHeight(110)
+        self.preview.setMinimumHeight(56)
         self.preview.setWordWrap(True)
         self.preview.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        lay.addWidget(self.preview)
+        body.addWidget(self.preview)
+        foot = QHBoxLayout()
+        foot.setSpacing(6)
         self.preview_note = QLabel("")
         self.preview_note.setWordWrap(True)
         self.preview_note.setProperty("muted", True)
-        lay.addWidget(self.preview_note)
-        self.refresh_btn = QPushButton("Làm mới ảnh (chụp lại màn hình)")
+        foot.addWidget(self.preview_note, 1)
+        self.refresh_btn = small_button("↻ Làm mới", "Chụp lại màn hình để cập nhật ảnh xem trước")
         self.refresh_btn.clicked.connect(self._refresh_preview)
-        lay.addWidget(self.refresh_btn)
+        foot.addWidget(self.refresh_btn)
+        body.addLayout(foot)
         self._preview_pixmap: QPixmap | None = None
+        self._shop_ok: bool | None = None
         return card
+
+    def _on_shop_toggled(self, on: bool):
+        self.shop_body.setVisible(on)
+        self.shop_toggle.setText(("▾  " if on else "▸  ") + "Vùng Shop và điểm click" + self._shop_status_tail())
+
+    def _shop_status_tail(self) -> str:
+        if not hasattr(self, "c"):
+            return ""
+        done = bool(self.c.config.get("shop_region")) and not self.c.monitor_pending
+        clicks = len(self.c.config.get("slot_centers") or []) == 5
+        return "  ·  ✓" if done and clicks else "  ·  ✗"
 
     def _build_advanced_card(self) -> QFrame:
         card, lay = make_card()
-        self.adv_toggle = QToolButton()
-        self.adv_toggle.setText("▸  Nâng cao")
-        self.adv_toggle.setProperty("section", True)
-        self.adv_toggle.setCheckable(True)
-        self.adv_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        lay.setSpacing(4)
+        self.adv_toggle = section_button("▸  Nâng cao", False)
         self.adv_toggle.toggled.connect(self._toggle_advanced)
         lay.addWidget(self.adv_toggle)
         self.adv_body = QWidget()
         b = QVBoxLayout(self.adv_body)
         b.setContentsMargins(0, 0, 0, 0)
-        b.setSpacing(8)
+        b.setSpacing(4)
         self.sl_image, self.lb_image = self._slider_row(b, "Độ khớp ảnh", lambda v: self._set_threshold("image", v))
         self.sl_name, self.lb_name = self._slider_row(b, "Độ khớp tên OCR", lambda v: self._set_threshold("name", v))
         lo, hi = (int(x) for x in NUMERIC_LIMITS["scan_interval_ms"])
@@ -445,30 +575,94 @@ class MainWindow(QMainWindow):
         return sl, value
 
     def _build_log(self) -> QWidget:
-        wrap = QWidget()
+        """Thanh Nhật ký, mặc định ĐÓNG: tiêu đề + badge số dòng mới (cam/đỏ khi có cảnh báo/lỗi) + dòng mới nhất. Mở ra thì có
+        Sao chép / Xóa / Cuộn cuối."""
+        wrap = QFrame()
+        wrap.setObjectName("logbar")
         lay = QVBoxLayout(wrap)
-        lay.setContentsMargins(8, 4, 8, 8)
-        lay.setSpacing(4)
+        lay.setContentsMargins(8, 3, 8, 4)
+        lay.setSpacing(3)
         head = QHBoxLayout()
-        label = QLabel("Nhật ký")
-        label.setObjectName("heading")
-        head.addWidget(label)
-        head.addStretch(1)
-        copy = QToolButton()
-        copy.setText("Sao chép")
-        copy.setProperty("filter", True)
-        copy.clicked.connect(lambda: QApplication.clipboard().setText(self.log_view.toPlainText()))
-        head.addWidget(copy)
+        head.setSpacing(8)
+        self.log_toggle = QToolButton()
+        self.log_toggle.setProperty("logtoggle", True)
+        self.log_toggle.setCheckable(True)
+        self.log_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.log_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        self.log_toggle.setText("▸  Nhật ký")
+        self.log_toggle.setAccessibleName("Mở hoặc đóng Nhật ký")
+        self.log_toggle.toggled.connect(self._toggle_log)
+        head.addWidget(self.log_toggle)
+        self.log_badge = QLabel("")
+        self.log_badge.setProperty("badge", True)
+        self.log_badge.setProperty("tone", "muted")
+        self.log_badge.setVisible(False)
+        head.addWidget(self.log_badge)
+        self.log_preview = ElidedLabel()
+        self.log_preview.setProperty("logpreview", True)
+        head.addWidget(self.log_preview, 100)
+        head.addStretch(1)  # khi dòng xem trước ẩn (đang mở), nút công cụ vẫn dồn sang phải thay vì giãn ra
+        self.log_tools = QWidget()
+        tools = QHBoxLayout(self.log_tools)
+        tools.setContentsMargins(0, 0, 0, 0)
+        tools.setSpacing(4)
+        self.log_bottom_btn = small_button("⤓ Cuối", "Cuộn xuống dòng mới nhất")
+        self.log_bottom_btn.clicked.connect(self._log_to_bottom)
+        self.log_clear_btn = small_button("Xóa", "Xóa Nhật ký")
+        self.log_clear_btn.clicked.connect(self._clear_log)
+        tools.addWidget(self.log_bottom_btn)
+        tools.addWidget(self.log_clear_btn)
+        self.log_tools.setVisible(False)
+        head.addWidget(self.log_tools)
+        self.log_copy_btn = small_button("Sao chép", "Sao chép toàn bộ Nhật ký")
+        self.log_copy_btn.clicked.connect(lambda: QApplication.clipboard().setText(self.log_view.toPlainText()))
+        head.addWidget(self.log_copy_btn)
         lay.addLayout(head)
         self.log_view = QPlainTextEdit()
         self.log_view.setObjectName("log")
         self.log_view.setReadOnly(True)
         self.log_view.setMaximumBlockCount(MAX_LOG_LINES)
         self.log_view.setAccessibleName("Nhật ký")
-        self.log_view.setFixedHeight(88)
+        self.log_view.setFixedHeight(LOG_OPEN_H)
+        self.log_view.setVisible(False)
         lay.addWidget(self.log_view)
+        self._log_new = 0
+        self._log_level = "info"
         self.log_wrap = wrap
         return wrap
+
+    def _toggle_log(self, on: bool):
+        self.log_view.setVisible(on)
+        self.log_tools.setVisible(on)
+        self.log_preview.setVisible(not on)
+        self.log_toggle.setText(("▾" if on else "▸") + "  Nhật ký")
+        if on:
+            self._log_new, self._log_level = 0, "info"  # đã xem: xóa badge
+            self._log_to_bottom()
+        self._refresh_log_badge()
+        self._apply_log_height()
+
+    def _apply_log_height(self):
+        self.log_view.setFixedHeight(LOG_OPEN_H_COMPACT if self._compact else LOG_OPEN_H)
+
+    def _log_to_bottom(self):
+        bar = self.log_view.verticalScrollBar()
+        bar.setValue(bar.maximum())
+
+    def _clear_log(self):
+        self.log_view.clear()
+        self._log_new, self._log_level = 0, "info"
+        self.log_preview.setFullText("")
+        self._refresh_log_badge()
+
+    def _refresh_log_badge(self):
+        """Badge chỉ hiện khi Nhật ký đang đóng và có dòng mới; màu theo mức nặng nhất trong các dòng mới."""
+        show = (not self.log_toggle.isChecked()) and self._log_new > 0
+        self.log_badge.setVisible(show)
+        self.log_badge.setText("99+" if self._log_new > 99 else str(self._log_new))
+        tone = {"error": "fail", "warn": "warn"}.get(self._log_level, "muted")
+        set_prop(self.log_badge, "tone", tone)
+        set_prop(self.log_preview, "tone", tone if self._log_new else "muted")
 
     # ------------------------------------------------------------------ bố cục thích ứng
     def resizeEvent(self, event):
@@ -482,7 +676,7 @@ class MainWindow(QMainWindow):
             want_compact = w < COMPACT_BELOW - HYSTERESIS
         if self._compact is None or want_compact != self._compact:
             self._apply_layout(want_compact)
-        self.log_view.setFixedHeight(72 if self._compact else 88)
+        self._apply_log_height()
 
     def _detach(self, *widgets):
         for w in widgets:
@@ -492,6 +686,8 @@ class MainWindow(QMainWindow):
         if compact == self._compact:
             return
         self._compact = compact
+        self._place_topbar(compact)
+        self._place_champ_head(compact)
         panels = (self.champ_panel, self.ready_card, self.shop_card, self.adv_card)
         self._detach(*panels)
         if compact:
@@ -517,9 +713,11 @@ class MainWindow(QMainWindow):
             self.right_lay.addStretch(1)
             self.splitter.addWidget(self.champ_panel)
             self.splitter.addWidget(self.right_scroll)
-            self.splitter.setStretchFactor(0, 3)
-            self.splitter.setStretchFactor(1, 2)
-            self.splitter.setSizes([620, 440])
+            self.right_scroll.setMinimumWidth(RIGHT_W - 40)
+            self.right_scroll.setMaximumWidth(RIGHT_W + 80)
+            self.splitter.setStretchFactor(0, 1)  # khung tướng chiếm mọi phần rộng thêm
+            self.splitter.setStretchFactor(1, 0)
+            self.splitter.setSizes([max(300, self.width() - RIGHT_W), RIGHT_W])
             self.body.setCurrentWidget(self.splitter)
 
     def go_to_step(self, step: str):
@@ -530,6 +728,10 @@ class MainWindow(QMainWindow):
                   ctl.STEP_SETTINGS: self.adv_card, ctl.STEP_OCR: self.ready_card}.get(step, self.ready_card)
         if step == ctl.STEP_SETTINGS and not self.adv_toggle.isChecked():
             self.adv_toggle.setChecked(True)
+        if step in (ctl.STEP_REGION, ctl.STEP_CLICKS) and not self.shop_toggle.isChecked():
+            self.shop_toggle.setChecked(True)
+        if step == ctl.STEP_OCR and not self.ready_toggle.isChecked():
+            self.ready_toggle.setChecked(True)
         set_prop(target, "attention", True)
         QTimer.singleShot(1600, lambda t=target: set_prop(t, "attention", False) if isValid(t) else None)
         if step == ctl.STEP_CHAMPIONS:
@@ -565,13 +767,14 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ đồng bộ controller -> widget
     def _wire_settings_from_controller(self):
         c = self.c
-        for w, v in ((self.sw_image, c.detect_image), (self.sw_name, c.detect_name), (self.old_btn, c.show_old)):
+        for w, v in ((self.sw_image, c.detect_image), (self.sw_name, c.detect_name)):
             w.blockSignals(True)
             w.setChecked(v)
             w.blockSignals(False)
         self.manual.blockSignals(True)
         self.manual.setPlainText(c.manual_names)
         self.manual.blockSignals(False)
+        self._sync_manual_visibility()
         for sl, lb, v in ((self.sl_image, self.lb_image, c.threshold), (self.sl_name, self.lb_name, c.name_threshold)):
             sl.blockSignals(True)
             sl.setValue(round(v * 100))
@@ -600,8 +803,14 @@ class MainWindow(QMainWindow):
         available = set(self.c.costs_available())
         for tier, b in self.cost_buttons.items():
             b.setEnabled(tier in available or b.isChecked())
-        total = len(self.c.visible())
-        self.count_label.setText(f"{len(items)}/{total} tướng" if total else "chưa tải")
+        total = len(self.c.champions)
+        if not total:
+            self.count_label.setText("chưa tải")
+        elif self.c.is_searching():
+            self.count_label.setText(f"{len(items)} kết quả (tìm trong mọi mùa)")
+        else:
+            self.count_label.setText(f"{len(items)}/{total} tướng")
+        self._sync_season_chips()
         self._refresh_selected_chip()
 
     def _refresh_selected_chip(self):
@@ -636,14 +845,38 @@ class MainWindow(QMainWindow):
         self._step_of_map = {r.key: r.step for r in reqs}
         self._refresh_selected_chip()
         self._refresh_start_button()
-        done_region = bool(self.c.config.get("shop_region"))
-        self.region_btn.setText(("✓  " if done_region else "①  ") + "Chọn vùng Shop" + (" (chọn lại)" if done_region else ""))
+        done_region = bool(self.c.config.get("shop_region")) and not self.c.monitor_pending
+        self.view_btn.setText("👁  Xác nhận" if self.c.monitor_pending else "👁  Xem")
+        self.view_btn.setToolTip("Xem gợi ý quy đổi trên màn hình, bấm Enter để dùng" if self.c.monitor_pending else
+                                 "Hiện khung vùng Shop và 5 chấm đỏ đánh số ngay trên màn hình thật để đối chiếu với game")
+        self.region_btn.setText(("✓  " if done_region else "①  ") + "Vùng Shop")
+        self.region_btn.setToolTip("Chọn lại vùng Shop (kéo khung CHỈ quanh hàng 5 thẻ tướng)" if done_region else
+                                   "Bước 1: kéo khung CHỈ quanh hàng 5 thẻ tướng")
         clicks_ok = next((r.ok for r in reqs if r.key == "clicks"), False)
-        self.clicks_btn.setText(("✓  " if clicks_ok else "②  ") + "Đặt 5 điểm click" + (" (đặt lại)" if clicks_ok else ""))
+        self.clicks_btn.setText(("✓  " if clicks_ok else "②  ") + "5 điểm click")
+        self.clicks_btn.setToolTip("Đặt lại 5 điểm click" if clicks_ok else "Bước 2: click lần lượt vào giữa ảnh tướng của 5 ô")
         self.region_label.setText(self.c.region_text())
+        self._auto_fold_blocks(missing is None)
 
     def _step_of(self, key: str) -> str:
         return getattr(self, "_step_of_map", {}).get(key, ctl.STEP_CHAMPIONS)
+
+    def _auto_fold_blocks(self, ready: bool):
+        """Thu/mở tự động khi trạng thái ĐỔI: 'Sẵn sàng' co thành 1 dòng khi đủ điều kiện và tự mở liệt kê khi thiếu; 'Vùng Shop' thu lại
+        lúc mở app nếu đã cấu hình xong và tự mở khi cấu hình hỏng/chưa xác nhận. Người dùng tự thu/mở thì giữ nguyên tới lần đổi sau."""
+        if ready != self._ready_state:
+            self._ready_state = ready
+            self.ready_toggle.setChecked(not ready)
+        self._refresh_ready_header()
+        shop_ok = (bool(self.c.config.get("shop_region")) and not self.c.monitor_pending
+                   and len(self.c.config.get("slot_centers") or []) == 5)
+        if self._shop_ok is None:
+            self.shop_toggle.setChecked(not shop_ok)
+        elif self._shop_ok and not shop_ok:
+            self.shop_toggle.setChecked(True)
+        self._shop_ok = shop_ok
+        self.shop_toggle.setText(("▾  " if self.shop_toggle.isChecked() else "▸  ") + "Vùng Shop và điểm click"
+                                 + self._shop_status_tail())
 
     def _refresh_start_button(self):
         running = self.c.running
@@ -665,8 +898,16 @@ class MainWindow(QMainWindow):
         if handler:
             handler(**d)
 
-    def _ev_log(self, text):
+    def _ev_log(self, text, level="info"):
         self.log_view.appendPlainText(text)
+        if self.log_toggle.isChecked():
+            return
+        self._log_new += 1
+        rank = {"info": 0, "warn": 1, "error": 2}
+        if rank.get(level, 0) > rank[self._log_level]:
+            self._log_level = level
+        self.log_preview.setFullText(text.split("] ", 1)[1] if text.startswith("[") and "] " in text else text)
+        self._refresh_log_badge()
 
     def _ev_status(self, text):
         self.status_label.setText(text)
@@ -676,14 +917,67 @@ class MainWindow(QMainWindow):
         box(self, title, text)
 
     def _ev_champions_changed(self):
+        self._rebuild_season_chips()
         self._refresh_list()
         self._refresh_readiness()
 
     def _ev_filter_changed(self):
-        self.old_btn.blockSignals(True)
-        self.old_btn.setChecked(self.c.show_old)
-        self.old_btn.blockSignals(False)
         self._refresh_list()
+
+    # ------------------------------------------------------------------ chip chọn mùa
+    def _clear_season_chips(self):
+        row = self.filter_row
+        for w in self._season_widgets:
+            for i in range(row.count()):
+                if row.itemAt(i).widget() is w:
+                    row.takeAt(i)
+                    break
+            w.deleteLater()
+        self._season_widgets = []
+
+    def _rebuild_season_chips(self):
+        """Dựng lại chip mùa theo các mùa hiện có (mùa mới ra tự có chip). Chỉ dựng lại khi danh sách mùa thật sự đổi. Các chip nằm
+        cùng hàng với chip cost và tự xuống dòng khi hẹp."""
+        seasons = self.c.seasons_available() if hasattr(self, "c") else []
+        if self.season_all is not None and list(self.season_buttons) == seasons:
+            self._sync_season_chips()
+            return
+        self._clear_season_chips()
+        row = self.filter_row
+        label = QLabel("Mùa:")
+        label.setProperty("muted", True)
+        self._season_widgets.append(label)
+        row.addWidget(label)
+        self.season_buttons = {}
+        self.season_all = filter_button("Tất cả", "Hiện tướng của mọi mùa", pill=True)
+        self.season_all.clicked.connect(lambda _=False: self._on_season_all())
+        self._season_widgets.append(self.season_all)
+        row.addWidget(self.season_all)
+        for season in seasons:
+            b = filter_button(f"M{season}", f"Chỉ hiện tướng có ở mùa {season} (chọn nhiều mùa được)", pill=True)
+            b.clicked.connect(lambda checked=False, s=season: self._on_season_clicked(s, checked))
+            self.season_buttons[season] = b
+            self._season_widgets.append(b)
+            row.addWidget(b)
+        row.invalidate()
+        self._sync_season_chips()
+
+    def _sync_season_chips(self):
+        if self.season_all is None:
+            return
+        chosen = self.c.seasons
+        searching = self.c.is_searching()
+        for season, b in self.season_buttons.items():
+            b.setChecked(season in chosen)
+            b.setToolTip("Đang tìm kiếm nên hiện mọi mùa — bộ lọc mùa sẽ áp dụng lại khi xóa ô tìm" if searching
+                         else f"Chỉ hiện tướng có ở mùa {season} (chọn nhiều mùa được)")
+        self.season_all.setChecked(not chosen)
+
+    def _on_season_all(self):
+        self.c.clear_seasons()
+
+    def _on_season_clicked(self, season: int, checked: bool):
+        self.c.toggle_season(season, checked)
 
     def _ev_selection_changed(self):
         if self.c.only_selected:
@@ -696,6 +990,13 @@ class MainWindow(QMainWindow):
         self._refresh_readiness()
 
     def _ev_config_changed(self):
+        self._refresh_readiness()
+
+    def _ev_monitor_changed(self):
+        st = self.c.monitor_status
+        self.monitor_label.setText(st.text if st else "")
+        pending = self.c.monitor_pending
+        self.monitor_label.setStyleSheet(f"color: {theme.tone_color(self.palette_, 'warn')};" if pending else "")
         self._refresh_readiness()
 
     def _ev_blocked(self, requirement):
@@ -875,6 +1176,31 @@ class MainWindow(QMainWindow):
     def _clicks_done(self, points):
         self._close_overlay()
         self.c.set_click_points(points)
+
+    def _view_on_screen(self):
+        """Hiện vùng Shop + 5 điểm click trên màn hình thật. Màn hình chưa có bộ đã xác nhận thì hiện GỢI Ý quy đổi, Enter để dùng."""
+        plan = self.c.view_plan()
+        if plan is None:
+            QMessageBox.information(self, "Xem trên màn hình", "Chưa có vùng Shop để xem — hãy chọn vùng Shop trước.")
+            self.go_to_step(ctl.STEP_REGION)
+            return
+        mon = plan["monitor"]
+        title = mon.label() if mon else ""
+
+        def build():
+            if self._overlay_factory is None:
+                ov = overlay_mod.ViewOverlay(plan["region"], plan["centers"], title, plan["confirm"])
+            else:
+                ov = self._overlay_factory("view", plan)
+            ov.cancelled.connect(self._close_overlay)
+            ov.finished.connect(self._view_confirmed)
+            return ov
+
+        self._open_overlay(build)
+
+    def _view_confirmed(self, _accepted=True):
+        self._close_overlay()
+        self.c.accept_suggestion()
 
     def closeEvent(self, event):
         self.c.close()
