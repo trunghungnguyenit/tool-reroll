@@ -504,3 +504,16 @@ class TestRollKeyConfig:
     def test_empty_string_is_allowed_to_disable(self):
         cfg = {**config.DEFAULT_CONFIG, "roll_key": ""}
         assert config.sanitize_config(cfg) == [] and cfg["roll_key"] == ""
+
+
+class TestGameProcessSet:
+    def test_known_game_processes_are_always_included(self):
+        names = config.game_process_set(["League of Legends.exe"])  # config cũ chỉ lưu tên cũ
+        assert {"league of legends.exe", "tftclient-win64-shipping.exe"} <= names
+
+    def test_user_names_are_added_and_lowercased(self):
+        assert "mygame.exe" in config.game_process_set(["MyGame.EXE"])
+
+    @pytest.mark.parametrize("raw", [None, [], ()])
+    def test_empty_config_still_recognises_the_game(self, raw):
+        assert config.game_process_set(raw) == frozenset({"league of legends.exe", "tftclient-win64-shipping.exe"})

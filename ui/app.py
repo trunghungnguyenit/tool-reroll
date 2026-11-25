@@ -31,6 +31,22 @@ def make_controller(notify, post):
     return AppController(notify, post=post, keyboard=keyboard)
 
 
+def install_ctrl_c_quit(window):
+    """Ctrl+C trong cửa sổ terminal (chạy bằng run.bat / python main.py) phải đóng app sạch (closeEvent → dừng quét, trả phím).
+    Mặc định vòng lặp sự kiện Qt chặn tín hiệu, và KeyboardInterrupt nổ ngay trong một slot: PySide chỉ in traceback rồi chạy tiếp
+    nên app không tắt (phải bấm nhiều lần). Trả QTimer giữ vòng lặp thỉnh thoảng trả quyền cho Python xử lý tín hiệu; người gọi
+    phải giữ tham chiếu tới nó tới khi app thoát."""
+    import signal
+
+    from PySide6.QtCore import QTimer
+
+    signal.signal(signal.SIGINT, lambda *_: window.close())
+    tick = QTimer()
+    tick.timeout.connect(lambda: None)
+    tick.start(200)
+    return tick
+
+
 def _run_gui() -> int:
     from PySide6.QtWidgets import QApplication
 
@@ -44,6 +60,7 @@ def _run_gui() -> int:
         return 0
     window = MainWindow(make_controller)
     window.show()
+    keep_alive = install_ctrl_c_quit(window)  # noqa: F841 — giữ QTimer sống tới khi app thoát
     return app.exec()
 
 

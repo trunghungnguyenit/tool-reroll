@@ -96,9 +96,51 @@ def ocr_languages_in_use() -> list[str]:
     return ordered
 
 
+_engines = threading.local()  # mỗi luồng OCR giữ engine Windows OCR riêng: một engine không chạy được hai lần đọc cùng lúc
+
+
+def _engine(lang: str):
+    """Engine Windows OCR của luồng hiện tại cho `lang` (tạo một lần rồi dùng lại). winocr.recognize_pil tạo engine MỚI mỗi lần đọc,
+    tốn thêm vài ms cho mỗi ô trong khi tool đọc 5 ô mỗi vòng. None nếu không tạo được (lúc đó dùng đường của winocr)."""
+    cache = getattr(_engines, "cache", None)
+    if cache is None:
+        cache = _engines.cache = {}
+    if lang not in cache:
+        from winrt.windows.globalization import Language
+        from winrt.windows.media.ocr import OcrEngine
+
+        cache[lang] = OcrEngine.try_create_from_language(Language(lang))
+    return cache[lang]
+
+
+def _drop_engine(lang: str) -> None:
+    cache = getattr(_engines, "cache", None)
+    if cache:
+        cache.pop(lang, None)
+
+
+async def _recognize(pil: Image.Image, lang: str):
+    """Đọc ảnh bằng engine dùng lại của luồng; không có engine/lỗi dựng ảnh thì quay về winocr.recognize_pil (cách cũ, chậm hơn)."""
+    import winocr
+
+    try:
+        engine = _engine(lang)
+        if engine is not None:
+            from winrt.windows.graphics.imaging import BitmapPixelFormat, SoftwareBitmap
+            from winrt.windows.storage.streams import DataWriter
+
+            rgba = pil if pil.mode == "RGBA" else pil.convert("RGBA")
+            writer = DataWriter()
+            writer.write_bytes(rgba.tobytes())
+            bitmap = SoftwareBitmap.create_copy_from_buffer(writer.detach_buffer(), BitmapPixelFormat.RGBA8, rgba.width, rgba.height)
+            return await engine.recognize_async(bitmap)
+    except Exception:
+        _drop_engine(lang)
+    return await winocr.recognize_pil(pil, lang)
+
+
 def _read_winocr(region: np.ndarray) -> str:
     """Đọc chữ từ ảnh bằng Windows OCR, chỉ thử các ngôn ngữ đã cài (thử ngôn ngữ chưa cài chỉ gây lỗi vô ích)."""
-    import winocr
 
     langs = ocr_languages_in_use()
     if not langs:
@@ -106,15 +148,21 @@ def _read_winocr(region: np.ndarray) -> str:
 
     rgb = cv2.cvtColor(region, cv2.COLOR_BGR2RGB)
     pil = Image.fromarray(rgb)
+    tried: set[str] = set()
 
     async def run():
         for lang in langs:
+            base = lang.split("-")[0].lower()
+            if base in tried:
+                continue  # en-US không ra chữ thì en-GB cũng không ra: đừng đọc lại cùng ảnh (gấp đôi thời gian đúng lúc thẻ còn hiệu ứng)
             try:
-                result = await winocr.recognize_pil(pil, lang)
+                result = await _recognize(pil, lang)
                 text = (result.text or "").strip()
                 if text:
                     return text
+                tried.add(base)
             except Exception as e:
+                _drop_engine(lang)  # engine có thể hỏng: lần sau tạo lại
                 record_ocr_error(f"OCR {lang}: {type(e).__name__}: {str(e)[:100]}")
         return ""
 
@@ -208,10 +256,43 @@ class NameMatcher:
         self._cands = list(cands)
         self._tokens = {c: c.split() for c in self._cands}
 
+    @staticmethod
+    def _clean(ocr_text: str) -> str:
+        """Chuẩn hóa chữ OCR và bỏ số vàng đi kèm tên ("vex 2" → "vex")."""
+        return " ".join(w for w in normalize_name(ocr_text).split() if not w.isdigit())
+
+    @staticmethod
+    def _best_ratio(ocr: str, cand: str) -> float:
+        """Độ giống (0-1) giữa chữ OCR đã chuẩn hóa và một tên: lấy cao nhất giữa cả chuỗi và từng từ của nó."""
+        best = 0.0
+        for text in [ocr] + [w for w in ocr.split() if len(w) >= MIN_FUZZY_LEN and w != ocr]:
+            best = max(best, SequenceMatcher(None, cand, text, autojunk=False).ratio())
+        return best
+
+    def nearest_target(self, ocr_text: str) -> tuple[str, float] | None:
+        """Mục tiêu giống chữ OCR nhất (kể cả dưới ngưỡng) và độ giống — chỉ để ghi Nhật ký 'suýt khớp', không dùng để mua."""
+        ocr = self._clean(ocr_text)
+        if len(ocr) < MIN_FUZZY_LEN:
+            return None
+        best: tuple[str, float] | None = None
+        for key, target in self._target_of.items():
+            score = self._best_ratio(ocr, key)
+            if best is None or score > best[1]:
+                best = (target, score)
+        return best
+
+    def explain(self, ocr_text: str, limit: int = 3) -> list[tuple[float, str, bool]]:
+        """`limit` tên giống chữ OCR nhất trong TOÀN BỘ danh sách: [(độ giống, tên, có phải mục tiêu)] — bằng chứng cho Nhật ký
+        để biết lần mua đó dựa trên chữ gì và có tên nào khác gần giống không (nguy cơ mua nhầm)."""
+        ocr = self._clean(ocr_text)
+        if len(ocr) < MIN_FUZZY_LEN:
+            return []
+        scored = sorted(((self._best_ratio(ocr, c), c) for c in self._cands if len(c) >= MIN_FUZZY_LEN), reverse=True)
+        return [(s, self._target_of.get(c) or c, c in self._target_of) for s, c in scored[:limit]]
+
     def match(self, ocr_text: str) -> tuple[str, float] | None:
         """Trả (tên_mục_tiêu, điểm) nếu OCR là một mục tiêu, ngược lại None."""
-        ocr = normalize_name(ocr_text)
-        ocr = " ".join(w for w in ocr.split() if not w.isdigit())  # bỏ số vàng đi kèm tên ("vex 2" → "vex")
+        ocr = self._clean(ocr_text)
         if not ocr:
             return None
 

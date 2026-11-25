@@ -8,7 +8,7 @@ Thanh Nhật ký ở dưới cùng, mặc định ĐÓNG (một dòng: tiêu đ�
 
 from PIL import Image
 from shiboken6 import isValid
-from PySide6.QtCore import QObject, Qt, QTimer, Signal
+from PySide6.QtCore import QByteArray, QObject, QSettings, Qt, QTimer, Signal
 from PySide6.QtGui import QGuiApplication, QImage, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from core import config as app_config
 from core import controller as ctl
 from core.config import NUMERIC_LIMITS
 from core.single_instance import APP_TITLE
@@ -42,6 +43,7 @@ from ui import overlay as overlay_mod
 from ui import theme
 from ui.champion_dialog import ChampionDialog
 from ui.champion_view import MODE_CARDS, MODE_TEXT, ChampionView
+from ui.selected_panel import SelectedPanel
 from ui.widgets import ElidedButton, ElidedLabel, FlowLayout, HintTextEdit, Switch
 
 COMPACT_BELOW = 900  # px: hẹp hơn thì dùng bố cục một cột
@@ -50,9 +52,24 @@ PAGE_CHAMPIONS, PAGE_SHOP, PAGE_RUN = 0, 1, 2
 STEP_TO_PAGE = {ctl.STEP_CHAMPIONS: PAGE_CHAMPIONS, ctl.STEP_REGION: PAGE_SHOP, ctl.STEP_CLICKS: PAGE_SHOP,
                 ctl.STEP_SETTINGS: PAGE_RUN, ctl.STEP_OCR: PAGE_RUN}
 MAX_LOG_LINES = 500
-RIGHT_W = 320  # cột phải (bố cục rộng): hẹp cố định để khung chọn tướng chiếm phần còn lại
+RIGHT_W = 340  # cột phải (bố cục rộng) mặc định; kéo thanh giữa để đổi trong khoảng RIGHT_MIN..RIGHT_MAX. Dư 12 px cho thanh cuộn dọc
 MANUAL_BOX_HEIGHT = 100  # px: ô tên gõ tay cao cỡ 4 dòng (trước đây 44 px chỉ vừa một dòng nên chữ gõ dài bị khuất)
 LOG_OPEN_H, LOG_OPEN_H_COMPACT = 120, 96
+RIGHT_MIN, RIGHT_MAX = 260, 640  # px: cột phải (bố cục rộng) kéo được trong khoảng này; mặc định RIGHT_W
+SELECTED_H, SELECTED_MIN_H = 130, 84  # khung 'Tướng đã chọn': cao mặc định / thấp nhất khi kéo thanh giữa
+LOG_MIN_H = 48  # Nhật ký đang mở kéo thấp nhất tới đây (phần chữ)
+HANDLE_W = 8  # bề rộng/cao thanh kéo giữa các khung
+DEFAULT_SIZE, MIN_WINDOW = (1100, 840), (420, 460)
+SCREEN_FRACTION = 0.92  # cửa sổ mở lần đầu không vượt quá từng này màn hình (laptop 1366x768, màn hình scale 125-150%)
+QWIDGETSIZE_MAX = 16777215
+UI_STATE_FILE = "ui_state.ini"  # cỡ cửa sổ và các khung đã kéo, nằm trong data/ cạnh config.json
+
+
+def _as_int(value) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 class UiPoster(QObject):
@@ -134,8 +151,13 @@ class MainWindow(QMainWindow):
         """make_controller(notify, post) -> AppController. overlay_factory cho phép test thay overlay thật."""
         super().__init__()
         self.setWindowTitle(APP_TITLE)
-        self.resize(1100, 840)
-        self.setMinimumSize(420, 560)
+        self.setMinimumSize(*MIN_WINDOW)
+        self._saved: dict = {}  # cỡ cửa sổ/khung đã nhớ ở lần chạy trước (xem _restore_window)
+        self._log_user_h: int | None = None  # chiều cao phần chữ của Nhật ký người dùng đã kéo; None = mặc định của bố cục
+        self._state_timer = QTimer(self)
+        self._state_timer.setSingleShot(True)
+        self._state_timer.setInterval(400)
+        self._state_timer.timeout.connect(self._save_ui_state)
         self._poster = UiPoster()
         self._overlay_factory = overlay_factory
         self._overlay = None
@@ -147,6 +169,7 @@ class MainWindow(QMainWindow):
         self._mode_pref = self.c.config.get("theme", "auto") if self.c.config.get("theme") in ("auto", "light", "dark") else "auto"
 
         self._build()
+        self._restore_window()
         self._apply_theme()
         QGuiApplication.styleHints().colorSchemeChanged.connect(lambda *_: self._apply_theme())
         self._wire_settings_from_controller()
@@ -167,9 +190,9 @@ class MainWindow(QMainWindow):
         outer.addWidget(self._build_topbar())
 
         self.body = QStackedWidget()
-        outer.addWidget(self.body, 1)
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
         self.splitter.setChildrenCollapsible(False)
+        self.splitter.setHandleWidth(HANDLE_W)  # kéo thanh giữa để đổi bề rộng khung Tướng | cột phải
         self.body.addWidget(self.splitter)  # trang 0: bố cục rộng
         self.compact_page = QWidget()  # trang 1: bố cục hẹp
         cl = QVBoxLayout(self.compact_page)
@@ -191,6 +214,10 @@ class MainWindow(QMainWindow):
         self.ready_card = self._build_ready_card()
         self.shop_card = self._build_shop_card()
         self.adv_card = self._build_advanced_card()
+        self.selected_card = SelectedPanel(self._portrait_pixmap)
+        self.selected_card.unselect.connect(lambda n: self.c.set_selected(n, False))
+        self.selected_card.unselect_manual.connect(self._remove_manual_name)
+        self.selected_card.clear_all.connect(lambda: self.c.clear_selected())
         self.compact_pages = [QWidget(), QWidget(), QWidget()]
         for page in self.compact_pages:
             lay = QVBoxLayout(page)
@@ -212,8 +239,29 @@ class MainWindow(QMainWindow):
         self.right_lay.setContentsMargins(6, 6, 6, 6)
         self.right_lay.setSpacing(6)
         self.right_scroll.setWidget(self.right_col)
+        # Cột phải gồm hai khung chồng lên nhau, kéo thanh ngang giữa chúng để đổi chiều cao: Tướng đã chọn | các khối cài đặt
+        self.right_split = QSplitter(Qt.Orientation.Vertical)
+        self.right_split.setChildrenCollapsible(False)
+        self.right_split.setHandleWidth(HANDLE_W)
+        self.right_split.addWidget(self.selected_card)
+        self.right_split.addWidget(self.right_scroll)
+        self.right_split.setStretchFactor(0, 0)
+        self.right_split.setStretchFactor(1, 1)
+        self.right_split.setSizes([SELECTED_H, 600])
 
-        outer.addWidget(self._build_log())
+        log = self._build_log()
+        self.v_split = QSplitter(Qt.Orientation.Vertical)  # thân | Nhật ký: kéo thanh giữa để đổi chiều cao Nhật ký khi đang mở
+        self.v_split.setChildrenCollapsible(False)
+        self.v_split.setHandleWidth(0)  # Nhật ký đóng thì không có gì để kéo
+        self.v_split.addWidget(self.body)
+        self.v_split.addWidget(log)
+        self.v_split.setStretchFactor(0, 1)
+        self.v_split.setStretchFactor(1, 0)
+        outer.addWidget(self.v_split, 1)
+        for sp in (self.splitter, self.right_split, self.v_split):
+            sp.splitterMoved.connect(lambda *_: self._schedule_state_save())
+        self.v_split.splitterMoved.connect(lambda *_: QTimer.singleShot(0, self._log_dragged))
+        self._fix_closed_log_height()
 
     def _build_topbar(self) -> QFrame:
         bar = QFrame()
@@ -642,12 +690,47 @@ class MainWindow(QMainWindow):
         self.log_toggle.setText(("▾" if on else "▸") + "  Nhật ký")
         if on:
             self._log_new, self._log_level = 0, "info"  # đã xem: xóa badge
-            self._log_to_bottom()
         self._refresh_log_badge()
-        self._apply_log_height()
+        if on:
+            self._set_log_height(self._log_user_h or self._log_default_h())
+            self._log_to_bottom()
+        else:
+            self._fix_closed_log_height()
+
+    def _log_default_h(self) -> int:
+        return LOG_OPEN_H_COMPACT if self._compact else LOG_OPEN_H
+
+    def _fix_closed_log_height(self):
+        """Nhật ký đóng: thanh chỉ cao đúng một dòng tiêu đề, không kéo được."""
+        self.v_split.setHandleWidth(0)
+        self.log_view.setMinimumHeight(0)
+        self.log_view.setMaximumHeight(QWIDGETSIZE_MAX)
+        self.log_wrap.setMinimumHeight(0)
+        self.log_wrap.setMaximumHeight(QWIDGETSIZE_MAX)
+        self.log_wrap.setFixedHeight(self.log_wrap.sizeHint().height())
+
+    def _set_log_height(self, view_h: int):
+        """Mở Nhật ký với phần chữ cao `view_h` px; sau đó kéo thanh giữa thân và Nhật ký để đổi (thấp nhất LOG_MIN_H)."""
+        self.log_wrap.setMinimumHeight(0)
+        self.log_wrap.setMaximumHeight(QWIDGETSIZE_MAX)
+        self.log_view.setFixedHeight(view_h)  # đo đúng chiều cao thanh ứng với phần chữ này
+        wrap_h = self.log_wrap.sizeHint().height()
+        self.log_view.setMinimumHeight(LOG_MIN_H)
+        self.log_view.setMaximumHeight(QWIDGETSIZE_MAX)
+        self.log_wrap.setMinimumHeight(wrap_h - view_h + LOG_MIN_H)
+        self.v_split.setHandleWidth(HANDLE_W)
+        total = max(self.v_split.height(), wrap_h + 100)
+        self.v_split.setSizes([total - wrap_h, wrap_h])
 
     def _apply_log_height(self):
-        self.log_view.setFixedHeight(LOG_OPEN_H_COMPACT if self._compact else LOG_OPEN_H)
+        """Đổi bố cục rộng/hẹp: Nhật ký đang mở mà người dùng chưa tự kéo thì lấy chiều cao mặc định của bố cục mới."""
+        if self.log_toggle.isChecked() and self._log_user_h is None and abs(self.log_view.height() - self._log_default_h()) > 1:
+            self._set_log_height(self._log_default_h())
+
+    def _log_dragged(self):
+        """Người dùng vừa kéo thanh Nhật ký: nhớ chiều cao mới (không bị đặt lại khi đổi bố cục)."""
+        if self.log_toggle.isChecked():
+            self._log_user_h = max(LOG_MIN_H, self.log_view.height())
 
     def _log_to_bottom(self):
         bar = self.log_view.verticalScrollBar()
@@ -681,6 +764,7 @@ class MainWindow(QMainWindow):
         if self._compact is None or want_compact != self._compact:
             self._apply_layout(want_compact)
         self._apply_log_height()
+        self._schedule_state_save()
 
     def _detach(self, *widgets):
         for w in widgets:
@@ -692,14 +776,19 @@ class MainWindow(QMainWindow):
         self._compact = compact
         self._place_topbar(compact)
         self._place_champ_head(compact)
-        panels = (self.champ_panel, self.ready_card, self.shop_card, self.adv_card)
+        panels = (self.champ_panel, self.ready_card, self.shop_card, self.adv_card, self.selected_card)
         self._detach(*panels)
         if compact:
             for page in self.compact_pages:
                 lay = page.layout()
                 while lay.count():
                     lay.takeAt(0)
-            self.compact_pages[PAGE_CHAMPIONS].layout().addWidget(self.champ_panel)
+            self.selected_card.set_compact(True)
+            self.selected_card.setMinimumHeight(0)
+            self.selected_card.setMinimumWidth(0)
+            self.selected_card.setMaximumWidth(QWIDGETSIZE_MAX)
+            self.compact_pages[PAGE_CHAMPIONS].layout().addWidget(self.selected_card)
+            self.compact_pages[PAGE_CHAMPIONS].layout().addWidget(self.champ_panel, 1)  # khung tướng nhận hết chỗ dư, không chia cho khung chọn
             self.compact_pages[PAGE_SHOP].layout().addWidget(self.shop_card)
             self.compact_pages[PAGE_SHOP].layout().addStretch(1)
             run = self.compact_pages[PAGE_RUN].layout()
@@ -715,13 +804,19 @@ class MainWindow(QMainWindow):
             self.right_lay.addWidget(self.shop_card)
             self.right_lay.addWidget(self.adv_card)
             self.right_lay.addStretch(1)
+            self.selected_card.set_compact(False)
+            self.selected_card.setMinimumHeight(SELECTED_MIN_H)
+            self.right_split.insertWidget(0, self.selected_card)
+            self.right_split.setSizes([self._saved.get("selected_h") or SELECTED_H, 600])
             self.splitter.addWidget(self.champ_panel)
-            self.splitter.addWidget(self.right_scroll)
-            self.right_scroll.setMinimumWidth(RIGHT_W - 40)
-            self.right_scroll.setMaximumWidth(RIGHT_W + 80)
+            self.splitter.addWidget(self.right_split)
+            for child in (self.selected_card, self.right_scroll):  # QSplitter tính lại min/max của chính nó từ các khung con, nên giới hạn đặt ở đây
+                child.setMinimumWidth(RIGHT_MIN)
+                child.setMaximumWidth(RIGHT_MAX)
             self.splitter.setStretchFactor(0, 1)  # khung tướng chiếm mọi phần rộng thêm
             self.splitter.setStretchFactor(1, 0)
-            self.splitter.setSizes([max(300, self.width() - RIGHT_W), RIGHT_W])
+            right_w = min(RIGHT_MAX, max(RIGHT_MIN, self._saved.get("right_w") or RIGHT_W))
+            self.splitter.setSizes([max(300, self.width() - right_w), right_w])
             self.body.setCurrentWidget(self.splitter)
 
     def go_to_step(self, step: str):
@@ -823,6 +918,23 @@ class MainWindow(QMainWindow):
         n = len(self.c.target_names())
         self.chip_selected.setText(f"{n} tướng đang chọn")
         set_prop(self.chip_selected, "tone", "ok" if n else "warn")
+        self._refresh_selected_panel()
+
+    def _refresh_selected_panel(self):
+        """Khung 'Tướng đã chọn' luôn khớp đúng danh sách tool sẽ bắt: tướng đã tick + tên gõ tay (không dựng lại nếu không đổi)."""
+        self._by_name = {c["name"]: c for c in self.c.champions}
+        chosen = [(n, self._by_name[n]["tier"] if n in self._by_name else 0) for n in self.c.selected_names()]
+        taken = {n for n, _ in chosen}
+        manual = [n for n in self.c.parsed_manual_names() if n not in taken]
+        self.selected_card.set_data(chosen, manual)
+
+    def _portrait_pixmap(self, name: str):
+        champ = getattr(self, "_by_name", {}).get(name)
+        return self.view.champion_model.portrait(champ) if champ else None
+
+    def _remove_manual_name(self, name: str):
+        rest = [n for n in self.c.parsed_manual_names() if n != name]
+        self.manual.setPlainText(", ".join(rest))  # textChanged → _on_manual_changed cập nhật controller và khung này
 
     def _refresh_readiness(self):
         reqs = self.c.requirements()
@@ -1031,6 +1143,9 @@ class MainWindow(QMainWindow):
 
     def _ev_portrait_ready(self, name):
         self.view.champion_model.refresh_name(name)
+        if name in self.c.selected_names():  # ảnh vừa tải xong của một tướng đang chọn: vẽ lại chip của nó
+            self.selected_card._key = None
+            self._refresh_selected_panel()
         if self._detail_dialog is not None and self._detail_dialog.champion_name == name:
             self._detail_dialog.refresh_portrait()
 
@@ -1233,6 +1348,76 @@ class MainWindow(QMainWindow):
         self._close_overlay()
         self.c.accept_suggestion()
 
+    # ------------------------------------------------------------------ nhớ cỡ cửa sổ và các khung đã kéo
+    def _ui_settings(self) -> QSettings:
+        app_config.DATA_DIR.mkdir(parents=True, exist_ok=True)
+        return QSettings(str(app_config.DATA_DIR / UI_STATE_FILE), QSettings.Format.IniFormat)
+
+    def _restore_window(self):
+        """Cỡ cửa sổ: đã nhớ thì dùng, chưa có thì ~92% màn hình (tối đa DEFAULT_SIZE); luôn nằm gọn trong màn hình hiện tại."""
+        try:
+            st = self._ui_settings()
+            self._saved = {
+                "geometry": st.value("window/geometry"),
+                "right_w": _as_int(st.value("split/right_w")),
+                "selected_h": _as_int(st.value("split/selected_h")),
+                "log_h": _as_int(st.value("log/height")),
+            }
+        except Exception:
+            self._saved = {}
+        if (self._saved.get("log_h") or 0) >= LOG_MIN_H:
+            self._log_user_h = self._saved["log_h"]
+        geometry = self._saved.get("geometry")
+        try:
+            restored = isinstance(geometry, (QByteArray, bytes, bytearray)) and bool(geometry) and self.restoreGeometry(geometry)
+        except Exception:
+            restored = False
+        if not restored:
+            w, h = DEFAULT_SIZE
+            screen = self.screen()
+            if screen is not None:
+                avail = screen.availableGeometry()
+                w, h = min(w, int(avail.width() * SCREEN_FRACTION)), min(h, int(avail.height() * SCREEN_FRACTION))
+            self.resize(max(w, MIN_WINDOW[0]), max(h, MIN_WINDOW[1]))
+            if screen is not None:
+                self.move(screen.availableGeometry().center() - self.rect().center())
+        self._fit_to_screen()
+
+    def _fit_to_screen(self):
+        """Cửa sổ không lớn hơn màn hình đang dùng (đổi màn hình/độ phân giải/scale giữa hai lần chạy)."""
+        screen = self.screen()
+        if screen is None:
+            return
+        avail = screen.availableGeometry()
+        w, h = min(self.width(), avail.width()), min(self.height(), avail.height())
+        if (w, h) != (self.width(), self.height()):
+            self.resize(w, h)
+        x = min(max(self.x(), avail.left()), max(avail.left(), avail.right() - w + 1))
+        y = min(max(self.y(), avail.top()), max(avail.top(), avail.bottom() - h + 1))
+        if (x, y) != (self.x(), self.y()):
+            self.move(x, y)
+
+    def _schedule_state_save(self):
+        self._state_timer.start()
+
+    def _save_ui_state(self):
+        try:
+            st = self._ui_settings()
+            st.setValue("window/geometry", self.saveGeometry())
+            if not self._compact:  # bố cục hẹp không có các thanh kéo ngang/dọc này: giữ giá trị lần rộng gần nhất
+                sizes, right = self.splitter.sizes(), self.right_split.sizes()
+                if len(sizes) == 2 and sizes[1] > 0:
+                    st.setValue("split/right_w", sizes[1])
+                if len(right) == 2 and right[0] > 0:
+                    st.setValue("split/selected_h", right[0])
+            if self._log_user_h:
+                st.setValue("log/height", self._log_user_h)
+            st.sync()
+        except Exception:
+            pass  # không ghi được thì lần sau mở lại theo mặc định, không ảnh hưởng việc bắt tướng
+
     def closeEvent(self, event):
+        self._state_timer.stop()
+        self._save_ui_state()
         self.c.close()
         super().closeEvent(event)

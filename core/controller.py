@@ -98,7 +98,7 @@ class MonitorStatus:
 
 
 _ERROR_MARKS = ("không bắt đầu được", "không hoạt động", "không chụp được", "bị kẹt", "gặp vấn đề", "lỗi tải", "lỗi khi", "lỗi tạo")
-_WARN_MARKS = ("bỏ click", "không có mạng", "không liên lạc", "lỗi mạng", "chưa có danh sách", "chưa xác nhận")
+_WARN_MARKS = ("bỏ click", "không click", "không có mạng", "không liên lạc", "lỗi mạng", "chưa có danh sách", "chưa xác nhận")
 
 
 def classify_log(text: str) -> str:
@@ -274,8 +274,8 @@ class AppController:
     def _target_monitor(self, mons: list[Monitor]) -> tuple[Monitor, str]:
         """Màn hình cần dùng: chứa cửa sổ game; game chưa chạy thì màn hình đã cấu hình gần nhất (nhận lại theo tên thiết bị + độ
         phân giải nên vẫn đúng khi các màn hình bị sắp xếp lại), rồi màn hình chứa vùng Shop; không có thì màn hình chính."""
-        names = frozenset(n.lower() for n in (self.config.get("game_process_names") or []))
-        found = monitors_mod.game_monitor(names, mons) if names else None
+        names = _config.game_process_set(self.config.get("game_process_names"))
+        found = monitors_mod.game_monitor(names, mons)
         if found is not None:
             return found, SOURCE_GAME
         active = self.config.get("active_monitor")
@@ -524,6 +524,14 @@ class AppController:
 
     def set_selected(self, name: str, on: bool):
         (self._selected.add if on else self._selected.discard)(name)
+        if not self.champions:  # chưa tải được danh sách (offline): selected_names() đọc lựa chọn đã lưu, nên cập nhật cả nó
+            self._saved_selection = [n for n in self._saved_selection if n != name] + ([name] if on else [])
+        self.notify("selection_changed")
+
+    def clear_selected(self):
+        """Bỏ chọn MỌI tướng đang tick (kể cả mùa đang ẩn). Tên gõ tay không bị đụng tới."""
+        self._selected.clear()
+        self._saved_selection = []
         self.notify("selection_changed")
 
     def select_all_visible(self):
@@ -934,6 +942,10 @@ class AppController:
             on_ocr_health=ui(self._ocr_health),
             on_stats=ui(self._stats),
             capture_backend=self.config.get("capture_backend", "auto"),
+            verbose_log=self.config.get("verbose_log", True),
+            learn_portraits=True,  # nhớ ảnh thẻ lần đầu OCR đọc đúng → lần sau nhận ra bằng ảnh, không chờ OCR
+            portraits_dir=_config.PORTRAITS_DIR,
+            async_ocr=True,  # OCR ở luồng riêng: vòng quét không bị chặn khi roll nhanh
         )
         modes = []
         if detect_image and templates:

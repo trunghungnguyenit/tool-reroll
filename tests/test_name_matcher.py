@@ -278,6 +278,93 @@ class TestOcrErrorRecording:
             nm._read_winocr(FRAME)
 
 
+class _Result:
+    def __init__(self, text):
+        self.text = text
+
+
+class TestOcrSpeedPath:
+    """Giảm thời gian mỗi lần đọc: không đọc lại cùng ảnh bằng en-GB khi en-US đã không ra chữ, và dùng lại engine Windows OCR
+    của luồng thay vì tạo engine mới cho mỗi ô."""
+
+    def run(self, monkeypatch, installed, answers):
+        calls = []
+
+        async def fake(pil, lang):
+            calls.append(lang)
+            return _Result(answers.get(lang, ""))
+
+        monkeypatch.setattr(nm, "installed_ocr_languages", lambda: list(installed))
+        monkeypatch.setattr(nm, "_recognize", fake)
+        return nm._read_winocr(FRAME), calls
+
+    def test_empty_en_us_does_not_retry_en_gb(self, monkeypatch):
+        text, calls = self.run(monkeypatch, ["en-US", "en-GB"], {})
+        assert text == "" and calls == ["en-US"]
+
+    def test_empty_en_us_still_tries_a_different_language(self, monkeypatch):
+        text, calls = self.run(monkeypatch, ["en-US", "vi-VN", "en-GB"], {"vi-VN": "Ngộ Không"})
+        assert text == "Ngộ Không" and calls == ["en-US", "vi-VN"]
+
+    def test_text_from_first_language_stops_immediately(self, monkeypatch):
+        text, calls = self.run(monkeypatch, ["en-US", "vi-VN"], {"en-US": "Vex"})
+        assert text == "Vex" and calls == ["en-US"]
+
+    def test_engine_is_cached_per_thread(self, monkeypatch):
+        import threading
+
+        monkeypatch.setattr(nm, "_engines", threading.local())
+        nm._engines.cache = {"en-US": "engine-của-luồng-này"}
+        assert nm._engine("en-US") == "engine-của-luồng-này"
+        seen = []
+        t = threading.Thread(target=lambda: seen.append(getattr(nm._engines, "cache", None)))
+        t.start()
+        t.join()
+        assert seen == [None]  # luồng khác không dùng chung engine (một engine không chạy được hai lần đọc cùng lúc)
+
+    def test_drop_engine_forgets_only_that_language(self, monkeypatch):
+        import threading
+
+        monkeypatch.setattr(nm, "_engines", threading.local())
+        nm._engines.cache = {"en-US": 1, "vi-VN": 2}
+        nm._drop_engine("en-US")
+        assert nm._engines.cache == {"vi-VN": 2}
+        nm._drop_engine("xx")  # không có thì không lỗi
+
+    def test_falls_back_to_winocr_when_the_cached_engine_path_fails(self, monkeypatch):
+        import asyncio
+        import sys
+        import types
+
+        fake_winocr = types.ModuleType("winocr")
+
+        async def recognize_pil(pil, lang):
+            return _Result("từ winocr")
+
+        fake_winocr.recognize_pil = recognize_pil
+        monkeypatch.setitem(sys.modules, "winocr", fake_winocr)
+
+        def broken(lang):
+            raise RuntimeError("không tạo được engine")
+
+        monkeypatch.setattr(nm, "_engine", broken)
+        out = asyncio.run(nm._recognize(nm.Image.new("RGB", (8, 8)), "en-US"))
+        assert out.text == "từ winocr"
+
+    def test_failed_read_drops_the_engine_and_is_recorded(self, monkeypatch, clean_errors):
+        dropped = []
+
+        async def boom(pil, lang):
+            raise OSError("Another RecognizeAsync operation is already running!")
+
+        monkeypatch.setattr(nm, "installed_ocr_languages", lambda: ["en-US"])
+        monkeypatch.setattr(nm, "_recognize", boom)
+        monkeypatch.setattr(nm, "_drop_engine", dropped.append)
+        assert nm._read_winocr(FRAME) == ""
+        assert dropped == ["en-US"]
+        assert any("Another RecognizeAsync" in m for m in nm.drain_ocr_errors())
+
+
 class TestOcrLanguagesInUse:
     def use(self, monkeypatch, installed):
         monkeypatch.setattr(nm, "installed_ocr_languages", lambda: list(installed))
@@ -301,3 +388,36 @@ class TestOcrLanguagesInUse:
         nm._ocr_backend = "winocr"
         nm.refresh_ocr_state()
         assert nm._installed_langs is None and nm._ocr_backend is None
+
+
+class TestExplainAndNearest:
+    """Hai hàm chỉ để ghi Nhật ký (bằng chứng mua, 'gần khớp'); không ảnh hưởng quyết định mua."""
+
+    def test_nearest_target_ignores_the_threshold(self):
+        m = NameMatcher(["Yunara", "Vex"], ALL_NAMES, 0.9)
+        assert m.match("Yunarr") is None  # dưới ngưỡng 0.9
+        target, score = m.nearest_target("Yunarr")
+        assert target == "Yunara" and 0.8 < score < 0.9
+
+    def test_nearest_target_returns_original_target_name_for_aliases(self):
+        m = NameMatcher(["Ngộ Không"], None, 0.8, {"Ngộ Không": ["Wukong"]})
+        assert m.nearest_target("Wukonq")[0] == "Ngộ Không"
+
+    def test_nearest_target_of_noise_is_none_or_low(self):
+        m = NameMatcher(["Yunara"], ALL_NAMES, 0.8)
+        assert m.nearest_target("") is None and m.nearest_target("ab") is None
+        assert m.nearest_target("zzzzzz")[1] < 0.4
+
+    def test_explain_ranks_the_whole_list_and_marks_targets(self):
+        m = NameMatcher(["Graves"], ALL_NAMES, 0.8)
+        top = m.explain("Gragas")
+        assert [name for _s, name, _t in top][0].lower() == "gragas" and top[0][2] is False  # khớp nhất là tướng KHÔNG phải mục tiêu
+        assert any(name == "Graves" and is_target for _s, name, is_target in top)
+        assert top == sorted(top, key=lambda r: r[0], reverse=True) and len(top) == 3
+
+    def test_explain_of_empty_text_is_empty(self):
+        assert NameMatcher(["Vex"], ALL_NAMES, 0.8).explain("  12 ") == []
+
+    def test_match_is_unchanged_by_the_new_helpers(self):
+        m = NameMatcher(["Graves"], ALL_NAMES, 0.8)
+        assert m.match("Gragas") is None and m.match("Graves 2") == ("Graves", 1.0)

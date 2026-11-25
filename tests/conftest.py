@@ -17,6 +17,14 @@ from tests.helpers import CENTERS, REGION  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
+def premoves(monkeypatch):
+    """Di chuột trước (premove) bị chặn như click: không test nào được đụng con trỏ thật. Trả danh sách các lần di chuột trước."""
+    recorded = []
+    monkeypatch.setattr(sc, "premove_async", lambda center: recorded.append(center))
+    return recorded
+
+
+@pytest.fixture(autouse=True)
 def _license_active(request, monkeypatch):
     """Máy test không có Key thật: coi như đã kích hoạt, trừ test đánh dấu @pytest.mark.real_license (kiểm tra chính giấy phép)."""
     if request.node.get_closest_marker("real_license") is None:
@@ -41,6 +49,7 @@ def data_dir(tmp_path, monkeypatch):
     data = tmp_path / "data"
     monkeypatch.setattr(config, "DATA_DIR", data)
     monkeypatch.setattr(config, "TEMPLATES_DIR", data / "templates")
+    monkeypatch.setattr(config, "PORTRAITS_DIR", data / "portraits")
     monkeypatch.setattr(config, "CONFIG_PATH", data / "config.json")
     monkeypatch.setattr(config, "SHOP_CAPTURE_PATH", data / "shop_capture.png")
     monkeypatch.setattr(config, "LEGACY_SHOP_PREVIEW_PATH", data / "shop_preview.png")
@@ -71,7 +80,11 @@ def clicks(monkeypatch):
 def foreground(monkeypatch):
     """Điều khiển trạng thái 'game đang ở foreground': foreground['value'] = True/False."""
     state = {"value": True}
+    monkeypatch.setattr(sc, "FOREGROUND_SETTLE_S", 0.0)  # test không chờ thật; test về thời gian chờ tự đặt lại giá trị
     monkeypatch.setattr(sc, "is_game_foreground", lambda names: state["value"])
+    monkeypatch.setattr(sc, "describe_foreground", lambda: "notepad.exe (lớp 'Notepad', tiêu đề 'Không tên')")
+    monkeypatch.setattr(sc, "suspect_game_process", lambda names: None)
+    monkeypatch.setattr(sc, "collect_environment", lambda names, region, centers=None: ["Chẩn đoán: giả lập."])
     return state
 
 

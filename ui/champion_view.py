@@ -334,5 +334,3 @@ class ChampionView(QListView):
     def sizeHintForRow(self, row):
         return ROW_H if self.mode == MODE_TEXT else super().sizeHintForRow(row)
 
-    def card_rect(self, row: int) -> QRect:
-        return self.visualRect(self._model.index(row))

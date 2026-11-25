@@ -49,9 +49,6 @@ class TestLookup:
     def test_region_outside_every_monitor_has_none(self):
         assert mon.monitor_for_region(ALL, {"left": 9000, "top": 9000, "width": 100, "height": 100}) is None
 
-    def test_find_by_device(self):
-        assert mon.find_by_device(ALL, r"\\.\DISPLAY2") is D2 and mon.find_by_device(ALL, "x") is None
-
 
 @pytest.mark.real_monitors
 class TestGameMonitor:

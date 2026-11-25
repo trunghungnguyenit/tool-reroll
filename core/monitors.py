@@ -63,10 +63,6 @@ def monitor_for_region(monitors: list[Monitor], region: dict) -> Monitor | None:
     return best
 
 
-def find_by_device(monitors: list[Monitor], device: str) -> Monitor | None:
-    return next((m for m in monitors if m.device == device), None)
-
-
 class _MONITORINFOEXW(ctypes.Structure):
     _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", wintypes.RECT), ("rcWork", wintypes.RECT),
                 ("dwFlags", wintypes.DWORD), ("szDevice", wintypes.WCHAR * 32)]

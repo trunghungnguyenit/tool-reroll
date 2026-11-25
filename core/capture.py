@@ -16,8 +16,13 @@ import numpy as np
 CHECK_EVERY_S = 3.0  # đối chiếu định kỳ khung DXGI với mss
 MISMATCH_LIMIT = 2  # số lần đối chiếu lệch liên tiếp thì bỏ DXGI
 SAME_MAX_DIFF = 12.0  # chênh lệch điểm ảnh trung bình (thang 0-255) vẫn coi là cùng một khung
-VERIFY_SAMPLES = 4  # lúc mở: thử tối đa từng này lần (màn hình có thể đang đổi giữa hai lần chụp)
-VERIFY_GAP_S = 0.025
+# Lúc chạy, khung DXGI và khung mss không được chụp cùng một lúc (mss mất ~20 ms): khi shop đang đổi (roll nhanh) chúng khác nhau là
+# BÌNH THƯỜNG, không phải DXGI hỏng. Chỉ đối chiếu khi màn hình đứng yên giữa hai lần chụp DXGI; không thì thử lại sớm.
+ANIMATING_DIFF = 3.0
+RECHECK_AFTER_ANIMATION_S = 0.5
+VERIFY_SAMPLES = 8  # lúc mở: thử tối đa từng này lần (màn hình có thể đang đổi, hoặc DXGI chưa kịp trả khung đầu tiên)
+VERIFY_GAP_S = 0.06
+NONE_TOLERANCE_S = 2.0  # DXGI mất quyền chụp (game đổi chế độ hiển thị, HRESULT 0x887A0026) thường tự phục hồi trong chừng này giây
 MAX_DEVICES = 4
 MAX_OUTPUTS = 8
 
@@ -47,16 +52,34 @@ class DxgiSource:
         self._clock = clock
         self._next_check = clock() + CHECK_EVERY_S
         self._bad = 0
+        # Chịu được DXGI tạm không có khung chừng này giây (dùng mss thay trong lúc chờ phục hồi). 0 = ném lỗi ngay lần đầu;
+        # open_dxgi chỉ bật sau khi đã kiểm tra khớp mss, để việc kiểm tra lúc mở không bị 'khung mss thay thế' đánh lừa.
+        self.tolerate_none_s = 0.0
+        self.none_frames = 0  # số khung phải lấy từ mss vì DXGI tạm không trả khung (để ghi Nhật ký/tổng kết)
+        self._none_since: float | None = None
 
     def grab(self) -> np.ndarray:
         """Khung mới nhất (BGR, h x w x 3). Không có khung mới thì trả khung gần nhất (màn hình đứng yên)."""
         frame = self._cam.grab(region=self._region, new_frame_only=False)
         if frame is None:
-            raise CaptureMismatch("DXGI không trả về khung nào")
+            now = self._clock()
+            if self._none_since is None:
+                self._none_since = now
+            if self.tolerate_none_s <= 0:
+                raise CaptureMismatch("DXGI không trả về khung nào")
+            if now - self._none_since >= self.tolerate_none_s:
+                raise CaptureMismatch(f"DXGI không trả về khung nào suốt {self.tolerate_none_s:.0f} giây")
+            self.none_frames += 1
+            return self._reference()  # đang phục hồi: dùng khung mss, quét không bị gián đoạn
+        self._none_since = None
         now = self._clock()
         if now >= self._next_check:
             self._next_check = now + CHECK_EVERY_S
             ref = self._reference()
+            after = self._cam.grab(region=self._region, new_frame_only=False)
+            if after is not None and mean_abs_diff(frame, after) > ANIMATING_DIFF:
+                self._next_check = now + RECHECK_AFTER_ANIMATION_S  # màn hình đang đổi: không đủ căn cứ để kết luận, xét lại sau
+                return frame
             if mean_abs_diff(frame, ref) > SAME_MAX_DIFF or (_is_black(frame) and not _is_black(ref)):
                 self._bad += 1
                 if self._bad >= MISMATCH_LIMIT:
@@ -157,4 +180,5 @@ def open_dxgi(region: dict, reference_grab, dxcam_module=None, sleep=time.sleep)
     if why is not None:
         source.close()
         return None, why
+    source.tolerate_none_s = NONE_TOLERANCE_S
     return source, "DXGI"

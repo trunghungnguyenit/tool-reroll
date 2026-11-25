@@ -107,6 +107,7 @@ Người dùng dán KEY → activate(): chữ ký Ed25519 → đúng mã máy �
 | File                   | Vai trò                                                                                              |
 | ---------------------- | ---------------------------------------------------------------------------------------------------- |
 | `ui/main_window.py`    | Cửa sổ chính: thanh điều khiển, danh sách tướng, 'Sẵn sàng chạy?', vùng Shop, Nâng cao, Nhật ký        |
+| `ui/selected_panel.py` | Khung 'Tướng đã chọn': chip có ảnh + nút ×, tên gõ tay, Bỏ chọn hết; thu thành một dòng ở bố cục hẹp |
 | `ui/champion_view.py`  | Danh sách tướng dạng thẻ ảnh hoặc chữ gọn (model + delegate tự vẽ, gõ tìm kiếm không dựng lại widget)  |
 | `ui/overlay.py`        | Overlay chọn vùng / đặt 5 điểm click / xem lại trên màn hình thật; MỘT cửa sổ cho mỗi màn hình (đúng DPI từng màn hình), có kính lúp; lưu tọa độ vật lý lấy từ `GetCursorPos` |
 | `ui/theme.py`          | Bảng màu sáng/tối (token) + stylesheet (kể cả nền `QDialog`/`QMessageBox`: không có rule này hộp thoại nền đen); `theme: auto` theo chế độ sáng/tối của Windows |
@@ -117,19 +118,29 @@ Bố cục tự đổi theo bề rộng (ngưỡng 900 px, vùng đệm ±40 px 
 lại nên kéo cửa sổ không giật. Nguyên tắc: **khung "Chọn tướng cần bắt" luôn được ưu tiên diện tích**.
 
 - **Rộng**: thanh trên MỘT hàng (tên | chip sẵn sàng/số tướng/OCR/tốc độ | phím + nút BẮT ĐẦU); thân là hai vùng cạnh nhau, vùng
-  Tướng chiếm mọi phần rộng thêm còn **cột phải cố định ~320 px** (kéo được trong khoảng 280–400 px).
+  Tướng chiếm mọi phần rộng thêm còn **cột phải mặc định 340 px**; **kéo thanh giữa** để đổi bề rộng cột phải trong khoảng 260–640 px.
 - **Hẹp**: tên + nút ở hàng trên, chip xuống dưới; một cột với thanh tab dưới (1·Tướng, 2·Vùng Shop, 3·Chạy), không cuộn ngang.
 - **Khung tướng**: hàng đầu = tiêu đề + đếm | ô tìm | Dạng chữ (hẹp: ô tìm xuống hàng dưới); một hàng lọc gồm chip cost, Đã chọn và
   chip mùa cỡ nhỏ (cao ~22 px) chung hàng và tự xuống dòng; lưới thẻ tự tính số cột theo bề rộng và **chia đều phần dư cho các
   cột** (thẻ lấp kín hàng), thanh cuộn dọc luôn hiện nên lọc/tìm không làm lưới chia lại; dưới khung chỉ còn MỘT hàng: Chọn tất cả /
   Bỏ chọn / Upload ảnh / Tải lại + công tắc nhận diện Ảnh/Tên (OCR) + nút "Tên gõ tay ▸" (ô nhập ẩn, tự hiện nếu đã có tên gõ tay).
+- **Tướng đã chọn** (`ui/selected_panel.py`): khung luôn cho thấy đúng danh sách tool sẽ bắt, dưới dạng chip có ảnh chân dung nhỏ, dải màu
+  theo cost và nút × để bỏ chọn; tên gõ tay cho OCR hiện thành chip viền đứt (có ✎, × xóa khỏi ô gõ tay); nút 'Bỏ chọn hết' (không đụng tên
+  gõ tay). Hiện tối đa 60 chip rồi ghi '… và N tướng nữa'. Rộng: nằm trên cùng cột phải, **kéo thanh ngang** giữa nó và các khối cài đặt để
+  đổi chiều cao (thấp nhất 84 px). Hẹp: thu thành MỘT dòng mỏng trên lưới tướng (số tướng + tên cắt bớt), bấm để mở ra chip.
 - **Cột phải** gồm ba khối bấm tiêu đề để thu/mở: **Sẵn sàng chạy** (tự co thành một dòng "✓ Sẵn sàng chạy" khi đủ điều kiện, tự mở
   liệt kê khi thiếu), **Vùng Shop và điểm click** (ba nút ① ② 👁 cùng một hàng; thu lại lúc mở app nếu đã cấu hình xong, tự mở khi
   cấu hình hỏng/chờ xác nhận hoặc khi được dẫn tới bước đó), **Nâng cao** (mặc định đóng). Thu/mở của người dùng được giữ cho tới
-  khi trạng thái đổi; KHÔNG nhớ giữa các lần mở app.
+  khi trạng thái đổi; KHÔNG nhớ giữa các lần mở app (khác với cỡ cửa sổ và các khung kéo, xem 'Cỡ cửa sổ và các khung kéo được').
 - **Nhật ký** ở dưới cùng, mặc định ĐÓNG: một dòng gồm tiêu đề, badge số dòng mới (cam khi có cảnh báo, đỏ khi có lỗi — phân loại
-  bằng `controller.classify_log`), dòng mới nhất, nút Sao chép (lấy toàn bộ Nhật ký kể cả khi đóng). Bấm để mở (cao 120 px, hẹp 96 px)
-  với Sao chép / Xóa / Cuộn cuối; mở ra thì badge được xóa. Có lỗi KHÔNG tự mở Nhật ký (không làm nhảy bố cục lúc đang chơi).
+  bằng `controller.classify_log`), dòng mới nhất, nút Sao chép (lấy toàn bộ Nhật ký kể cả khi đóng). Bấm để mở (phần chữ cao 120 px, hẹp
+  96 px; **kéo thanh giữa thân và Nhật ký** để đổi chiều cao, thấp nhất 48 px) với Sao chép / Xóa / Cuộn cuối; mở ra thì badge được xóa.
+  Đóng thì thanh chỉ cao một dòng và không có thanh kéo. Có lỗi KHÔNG tự mở Nhật ký (không làm nhảy bố cục lúc đang chơi).
+- **Cỡ cửa sổ và các khung kéo được.** Cửa sổ mở lần đầu ~92% màn hình đang dùng (tối đa 1100×840, nhỏ nhất 420×460) nên vừa cả màn hình
+  laptop nhỏ/scale cao; mở lần sau dùng đúng cỡ và vị trí đã nhớ (luôn bị kẹp vào trong màn hình hiện tại, đổi màn hình/độ phân giải không
+  làm cửa sổ tràn ra ngoài). Ba thanh kéo (cột phải, chiều cao Tướng đã chọn, chiều cao Nhật ký) được nhớ ở `data/ui_state.ini` (ghi sau
+  khi kéo 0,4 s và khi đóng); file hỏng hay giá trị ngoài khoảng cho phép thì dùng mặc định. Bố cục hẹp không ghi đè giá trị của bố cục rộng.
+  Ghi chú kỹ thuật: giới hạn bề rộng cột phải đặt ở các khung con của `right_split`, vì `QSplitter` tự tính lại min/max của chính nó.
 - Nút BẮT ĐẦU luôn bấm được: nếu thiếu điều kiện thì nút viền đứt, bấm vào sẽ báo thiếu gì và dẫn tới đúng bước (đổi tab hoặc mở và
   nháy khối tương ứng). Mỗi thay đổi (đổi chế độ, kéo thanh, gõ tên, chọn tướng) cập nhật danh sách điều kiện ngay lập tức.
 
@@ -314,6 +325,45 @@ Mỗi lần mua (`_buy_batch`), scanner kiểm tra: game đang ở foreground (`
 loạt ô trúng** và so từng ô với khung đã nhận diện (shop chưa roll) → ô chưa bị khóa → mới gửi lệnh click cho luồng click
 (`core/buyer.py`), luồng này click cả loạt liên tiếp rồi trả chuột về MỘT lần (không chặn luồng quét).
 
+### Chống mua nhầm và Nhật ký chẩn đoán
+
+- **Đọc lại lần 2 cho khớp mờ.** Khớp tên chính xác (điểm ≥ 0,98: đúng tên, hoặc tên nằm trọn trong chữ OCR) click ngay. Khớp
+  mờ / mảnh chữ (điểm thấp hơn) phải được OCR lại trên khung chụp xác nhận và ra ĐÚNG mục tiêu đó mới click; đọc ra tên khác,
+  rỗng hay quá 0,6 giây thì bỏ click (`Bỏ click ...: đọc lại lần 2 ra ...`) và vòng sau quét lại.
+- **Bằng chứng mỗi lần mua:** `↳ bằng chứng ô N: OCR đọc '...' → tên (tên 100%); độ giống thẻ lúc xác nhận 0.97`, kèm các tên
+  khác gần giống nếu là khớp mờ. Mua nhầm thì đọc dòng này là biết do OCR đọc sai, ngưỡng thấp hay thẻ đổi.
+- **Xác nhận click có tác dụng:** sau mỗi click, ô đó phải đổi/biến mất trong 0,6 giây (`✓ Xác nhận ô N ... sau X ms`). Không thấy
+  thì ghi `Cảnh báo: đã click ô N nhưng thẻ vẫn còn`; 3 lần liên tiếp thì báo lỗi kèm chẩn đoán môi trường. Nguyên nhân hay gặp
+  nhất: game chạy quyền Admin còn tool thì không (Windows chặn click giả lập) — chạy tool bằng Administrator.
+- **Cách một cú click được gửi** (`core/buyer.py`): đặt con trỏ → gửi sự kiện di chuyển thật (`mouse_event` tuyệt đối trên desktop ảo)
+  → chờ 20 ms → nhấn → giữ 30 ms → nhả. Trước đây di chuyển/nhấn/nhả diễn ra trong cùng một micro giây: client TFT mới (Unreal) đọc
+  chuột theo khung hình nên bỏ lỡ cú click, Nhật ký ghi "đã click" mà thẻ vẫn còn dù tool và game cùng quyền thường. Mỗi cú click
+  tốn ~50 ms ở luồng click riêng (không chặn luồng quét).
+- **Chờ game ổn định sau khi lên foreground** (`FOREGROUND_SETTLE_S` = 0,35 s, `scanner._foreground_settled`): sau một lần bị chặn
+  vì game không ở trước, tool phải thấy game ở trước liên tục 0,35 s mới click lại (click ngay lúc Alt-Tab, khi cửa sổ còn đang kích
+  hoạt, bị game bỏ qua). Game ở trước liên tục từ đầu thì không chờ. Dòng `Cảnh báo: đã click ... nhưng thẻ vẫn còn` có kèm
+  `Click được gửi X giây sau khi game lên trước` (nếu vừa bị chặn) để biết click có rơi vào lúc game chưa sẵn sàng không.
+- **Vùng Shop có khớp 5 thẻ không:** trước đây tool chia ĐỀU vùng thành 5 ô rồi OCR dải tên từng ô, nên vùng kéo thừa (gồm nút
+  Buy XP/Reroll bên trái) làm thẻ dính nhau: tên đọc ra `uko 31 Rek'SÉ`, tướng ở ô đó không bao giờ được mua. Nay `core/cards.py` tự
+  tìm ranh giới 5 thẻ thật trong khung chụp: giữa hai thẻ có khe phẳng (độ lệch chuẩn độ sáng dọc cột < 3, ≥ 5 cột liên tiếp), nên 5
+  khối đều nhau ±12% cách đều ±8% là 5 thẻ. Khối nút Buy XP/Reroll trông giống một thẻ, nên khi có nhiều cách chọn thì 5 điểm click
+  được dùng để chọn (mỗi điểm phải nằm trong thẻ tương ứng); vẫn mơ hồ hoặc chưa đủ 5 thẻ (shop trống, đang hiệu ứng) thì giữ cách
+  chia đều và thử lại mỗi 0,5 giây; tìm được rồi thì giữ nguyên cả ván. Nhật ký ghi `Đã nhận ra vị trí 5 thẻ trong vùng Shop (cột x: ...)`
+  và cảnh báo 'vùng Shop KHÔNG khớp' không còn ghi nữa. Đo trên ảnh thật: chia đều đọc `''`/`ma Akali`, cắt theo thẻ đọc đủ
+  `Karma`/`Akali`/`Rakan`. Điểm click vẫn chỉ dùng để click (và chọn thẻ khi mơ hồ). Vẫn nên chọn vùng gọn quanh 5 thẻ.
+- **Chẩn đoán môi trường** (`core/diagnostics.py`) ghi lúc bắt đầu quét và lần đầu bị chặn foreground: tool/game chạy quyền gì,
+  cửa sổ game ở đâu, vùng Shop có nằm trong cửa sổ game không (`Cảnh báo:` nếu lệch).
+- **Bị chặn foreground:** `Không click: game không ở foreground. Cửa sổ đang ở trước: <process> (lớp, tiêu đề)`, nhắc lại mỗi 10
+  giây; game quay lại foreground thì tự mở chặn (`Game đã ở foreground trở lại`). Tool nhận game theo tên process (các tên đã biết + `game_process_names`) HOẶC lớp cửa sổ
+  `RiotWindowClass` (đọc được cả khi Vanguard/quyền Admin chặn việc mở process của game).
+- **Gợi ý tên process:** cửa sổ ở trước không được nhận nhưng tên process có `tft`/`league` thì Nhật ký ghi `Gợi ý: '<exe>' có vẻ
+  là game ... thêm vào game_process_names` (Riot đổi tên client thì chỉ cần thêm tên vào config, không cần sửa code).
+- **Khung đen:** vùng Shop đen > 5 giây khi game ở foreground → `Cảnh báo: khung chụp vùng Shop ĐEN` (fullscreen độc quyền hoặc sai màn hình).
+- **Chế độ chi tiết** (`verbose_log`, mặc định bật): dòng `Shop: tên1 | tên2 | ...` (★ = mục tiêu) mỗi lần roll (tối đa 400 dòng mỗi
+  lần chạy) và `Gần khớp ô N: OCR đọc '...' giống mục tiêu X 78% nhưng KHÔNG mua` để chỉnh ngưỡng tên.
+- **Tổng kết khi dừng:** `Thống kê: click, xác nhận, bỏ vì đọc lại, lượt bị chặn, phím roll nhận, OCR`. `phím roll nhận 0 lần` dù bạn
+  đã bấm roll trong game nghĩa là tool không thấy phím trong game (lại là lệch quyền Admin).
+
 ### Tối ưu tốc độ khi roll liên tục
 
 Đo thật trên máy thử (vùng 1200x200): chụp bằng `mss` mất **~11 ms mỗi lần bất kể vùng lớn hay nhỏ** (chụp 8x8 vẫn ~8 ms),
@@ -327,9 +377,67 @@ OCR 5 ô ~13 ms, so khớp ảnh 5 ô ~4 ms, chữ ký 5 ô ~1 ms. Từ đó:
 | Nhánh ảnh | chờ OCR xong mới mua | mua ngay sau khi so khớp, trước OCR |
 | Shop đứng yên | xử lý lại mọi khung | khung y hệt khung trước thì bỏ qua chữ ký và so khớp ảnh (CPU giảm khoảng 3 lần trong phép đo) |
 
+**Nhận diện bằng ảnh không chạy được trên client Unreal mới.** Ảnh mẫu Data Dragon (splash cắt giữa) khác hẳn ảnh trên thẻ shop (có
+lớp tộc/hệ chồng lên): đo trên ảnh thật, điểm so khớp đúng tướng chỉ ~0 (Akali −0,15, Rakan 0,05; ngưỡng 0,72), nên mọi lần mua
+trong Nhật ký đều là `(tên …%)`. Tốc độ vì vậy do OCR quyết định: mỗi lần đọc dùng lại engine Windows OCR của luồng thay vì tạo engine
+mới (`name_matcher._engine`, mỗi luồng một engine vì một engine không chạy được hai lần đọc cùng lúc), và ô không ra chữ thì không đọc
+lại bằng en-GB sau en-US (cùng ảnh, gần như cùng kết quả, mất gấp đôi đúng lúc thẻ còn hiệu ứng). Đo: 5 ô song song 18,6 → 13,3 ms
+khi máy rảnh; trong game (cạnh tranh CPU) con số thật lớn hơn nhiều (Nhật ký: ~108 ms mỗi đợt).
+
+**Ảnh thẻ tự học** (`core/portraits.py`, thư mục `data/portraits/`). Ảnh mẫu Data Dragon không dùng được trên client mới, nên tool tự
+học: khi OCR đọc ĐÚNG tên (khớp đúng/trọn tên, điểm ≥ 0,98) và thẻ đứng yên giữa lúc đọc và lúc click (độ giống ≥ 0,97), tool lưu ảnh
+thẻ đó (vùng ảnh tướng + tộc/hệ, chuẩn hóa về 96×54 xám, mẫu là phần giữa 80×40, tối đa 3 mẫu mỗi tướng). Các lần sau thẻ đó hiện ra
+ở BẤT KỲ ô nào, tool nhận ra bằng so ảnh (`cv2.matchTemplate` trượt ±8 px, ~0,1 ms mỗi mẫu) và click không chờ OCR. Đo trên ảnh
+shop thật: cùng tướng khác ô/lệch ±6 px/tối đi khớp 0,94–1,00, khác tướng chỉ 0,34–0,44; ngưỡng 0,88 và tướng thứ hai phải kém
+tối thiểu 0,05. Chỉ dùng khi đã nhận ra vị trí 5 thẻ (`core/cards.py`) và chỉ cho các tướng đang chọn. Chống học nhầm: ảnh đang khớp
+mẫu của tướng KHÁC thì xóa mẫu đó và không học; sau mỗi lần mua bằng ảnh, OCR đọc lại thẻ đó ở luồng nền (không làm chậm click),
+đọc ra tên khác chắc chắn thì xóa mẫu của tướng đã mua nhầm (`Cảnh báo: vừa mua X ô N bằng ảnh nhưng OCR đọc thẻ đó là Y`). Mẫu lưu
+kèm kích thước ô; đổi vùng Shop/độ phân giải thì mẫu cũ không dùng và tool học lại. Xóa thư mục `data/portraits/` là học lại từ
+đầu. Nhật ký: `Đã học ảnh thẻ X (mẫu n)`, và khi dừng `Ảnh thẻ tự học: ... lượt nhận ra bằng ảnh, OCR xác nhận đúng ... lần`.
+
+**Đường mua nhanh và chính xác** (bỏ/gộp các bước làm chậm hoặc làm lỡ):
+- **Di chuột trước** (`buyer.premove_async`): ngay khi nhận diện được ô cần mua, con trỏ đã bay tới ô đó trong lúc tool chụp lại shop để xác
+  nhận (~30 ms); xác nhận xong cú nhấn đi ngay, không còn chờ 20 ms sau xác nhận. Đo: nhấn lúc 52 → 31 ms, nhả lúc 82 → 62 ms tính từ lúc nhận
+  diện. Cú nhấn cũng sát lúc xác nhận hơn (đỡ lỡ nếu shop roll giữa chừng). Không có lệnh click trong 250 ms thì trả chuột về.
+- **Xác nhận thẻ nhận bằng ẢNH theo đúng tướng, không theo độ giống khung** (`_still_that_champion`): khung xác nhận cách khung nhận diện ~30 ms,
+  thẻ đang chạy hiệu ứng thì hai khung khác nhau dù vẫn là cùng một thẻ (Nhật ký thật: `độ giống 0.66/0.71/0.76/0.77 < 0.80` bỏ oan). Nay thẻ
+  còn khớp ảnh đã học của đúng tướng đó thì mua (`identity_verified`); roll sang tướng khác thì ảnh không khớp và vẫn bỏ. Thẻ nhận bằng tên
+  (OCR) vẫn so khung như cũ.
+- **OCR im khi đang roll** (xem bên dưới): chỉ quét lưới an toàn khi shop đã đứng yên `RELAXED_SETTLED_S` (0,4 s) và cách lần trước ≥ `RELAXED_OCR_S`
+  (2 s). Đang roll liên tục thì kết quả OCR luôn cũ (bị bỏ) nên chỉ tốn CPU của game.
+- **Bớt đọc lại sau khi mua bằng ảnh**: OCR đọc lại thẻ vừa mua bằng ảnh chỉ cần đến khi mẫu của tướng đó được xác nhận đúng `SHADOW_TRUST` (3) lần;
+  phát hiện nhầm thì xóa mẫu và bắt đầu đếm lại.
+- **Ghi file ảnh học ở luồng nền** (`PortraitLibrary(background=True)`): luồng quét không bao giờ chờ ổ đĩa/Windows Defender đang quét file mới;
+  mẫu dùng được ngay trong bộ nhớ, file được ghi sau và chờ ghi nốt khi tắt (`flush`).
+
+**OCR thưa khi đã học đủ** (`scanner._ocr_relaxed`, `RELAXED_OCR_S` = 2 s). Log thật ghi OCR ~300 ms mỗi đợt và hay bị kẹt 2 giây,
+vì OCR chạy liên tục suốt lúc roll làm game và chính tool chậm đi. Khi MỌI mục tiêu đang chọn đã có ảnh thẻ học được (cho kích thước ô
+hiện tại), nhánh ảnh lo việc nhận ra và OCR chỉ còn là lưới an toàn: cả 5 ô mỗi 2 giây khi shop đứng yên, KHÔNG OCR theo thay đổi/hiệu ứng. Thiếu
+mẫu của bất kỳ mục tiêu nào thì OCR chạy như thường để học nó. Dáng khác của thẻ (skin/hiệu ứng) mà ảnh đã học không khớp thì lưới an
+toàn đọc ra → học thêm mẫu (tối đa 3). OCR giờ cũng **học ngay lúc đọc đúng** (`_learn_from_ocr`: khớp đúng tên, thẻ vẫn đứng yên so
+với khung mới nhất), không cần đợi một lần mua thành công. Mô phỏng 12 giây roll 8 lần/giây (4 mục tiêu): OCR từ ~288 đợt xuống ~10,
+vẫn mua đủ 290/290, độ trễ trung vị 12–15 ms → 4 ms.
+
+**OCR chạy nền** (`ShopScanner(async_ocr=True)`, controller luôn bật). Trước đây vòng quét đứng chờ cả đợt OCR (~100 ms khi game đang
+chạy, đo thật trong Nhật ký: vòng trung bình 170–256 ms), nên nhánh ảnh chỉ được kiểm tra mỗi vài trăm ms. Nay luồng `OCR-dispatch`
+đọc các ô cần đọc ở khung MỚI NHẤT, vòng quét đẩy yêu cầu rồi quay lại quét tiếp; ô cần đọc lúc luồng OCR bận được gộp lại. Kết
+quả OCR của thẻ đã đổi (roll nhanh) bị bỏ lặng lẽ (`stale_ocr`), không ghi 'thẻ đã đổi' vào Nhật ký. Mô phỏng có kiểm soát (OCR giả
+mất 300 ms mỗi đợt): nhận ra thẻ đã học sau ~2 ms với OCR nền, ~600 ms với bản đồng bộ. Mặc định của lớp vẫn là đồng bộ (test cũ giữ nguyên).
+
+**Nhật ký vòng quét chậm.** Vòng quét lâu hơn `STALL_LOG_MS` (400 ms) thì ghi `Vòng quét chậm N ms: chụp màn hình A ms, mua B ms, còn lại C ms
+(cách chụp: DXGI/mss)` (tối đa 20 dòng), và khi dừng có `Chụp màn hình (DXGI|mss): n lần, trung bình, p95, chậm nhất`. 'Còn lại' lớn là
+tool bị tranh CPU/GIL; 'chụp màn hình' lớn là chụp màn hình bị GPU của game làm chậm (mss tốn ~20 ms/lần ngay cả khi máy rảnh, DXGI ~0,2 ms).
+
 **Chụp DXGI với dự phòng mss.** `capture_backend: auto` (mặc định) thử DXGI trước: chọn đúng màn hình/adapter chứa vùng Shop
 (theo tọa độ desktop), đổi sang tọa độ cục bộ, rồi **so khung DXGI với ảnh `mss` của cùng vùng**; khác hoặc đen (thường do game
 fullscreen độc quyền) thì không dùng DXGI. Khi chạy còn đối chiếu định kỳ mỗi 3 giây, lệch 2 lần liên tiếp thì tự quay về `mss`.
+**Chỉ đối chiếu khi màn hình đứng yên** (hai khung DXGI liên tiếp giống nhau, `ANIMATING_DIFF`): khung mss chụp trễ DXGI ~20 ms nên khi roll
+nhanh chúng khác nhau là bình thường. Trước đây việc này làm DXGI bị bỏ oan giữa lúc roll (Nhật ký: `khung DXGI lệch so với ảnh chụp mss khi đang
+chạy`) và cả phần còn lại của lần chạy phải chụp bằng mss chậm. Đang đổi thì xét lại sau 0,5 giây. Lúc mở, thử tới 8 lần (cách nhau 60 ms) trước khi
+kết luận 'khung đen'.
+Game đổi chế độ hiển thị (vào fullscreen) làm DXGI mất quyền chụp (`HRESULT 0x887A0026`, thư viện tự phục hồi): trong tối đa 2 giây
+không có khung, tool lấy khung `mss` thay (quét không gián đoạn) rồi dùng lại DXGI khi phục hồi; quá 2 giây mới bỏ DXGI. Nhật ký ghi
+`DXGI tạm mất khung` một lần và số lần khi dừng.
 Lý do được ghi vào Nhật ký: `Chụp màn hình: DXGI (...)` hoặc `Chụp màn hình: mss — không dùng được DXGI: ...`. Đặt
 `capture_backend: mss` (mục Nâng cao) để luôn dùng `mss`.
 
@@ -364,7 +472,7 @@ scanner._loop()  (lặp liên tục cho đến khi F8 dừng)
   │           └─► NameMatcher.match()    → so với TOÀN BỘ tên tướng trong game, chỉ mua khi
   │                                       khớp tốt nhất LÀ một tướng đã chọn (không nhầm Gragas ↔ Graves)
   │
-  └─► Nếu khớp → _try_buy()
+  └─► Nếu khớp → _buy_batch()
         └─► core/buyer.py → buy_slot_async()
               └─► Win32 API click chuột tại slot_centers[i]
                     └─► controller.on_match → Nhật ký (hiện "✓ Mua ... ở ô ...")
@@ -399,6 +507,8 @@ F8 lần nữa / bấm DỪNG / đóng cửa sổ
 | `core/champions.py`     | Tải danh sách tướng + ảnh từ Riot API         |
 | `core/scanner.py`       | Quét shop, nhận diện, quyết định mua          |
 | `core/buyer.py`         | Click chuột mua tướng                         |
+| `core/cards.py`         | Tự tìm vị trí 5 thẻ trong khung chụp vùng Shop (nhìn khe phẳng giữa các thẻ) |
+| `core/portraits.py`     | Ảnh thẻ tự học: nhớ ảnh thẻ lần đầu OCR đọc đúng, lần sau nhận ra bằng ảnh (vài ms) |
 | `core/name_matcher.py`  | OCR đọc tên tướng trong shop                  |
 | `core/preview.py`       | Chụp + hiển thị ảnh xem trước vùng shop       |
 | `data/config.json`      | Lưu vùng shop, điểm click, tướng đã chọn      |
@@ -437,6 +547,7 @@ data/
 ├── app.log               ← tự sinh: log và lỗi (xoay vòng) — gửi file này khi cần debug
 ├── champions_catalog.json ← tự sinh: mọi tướng của mọi patch đã quét (tên 2 ngôn ngữ, cost, mùa, ảnh, patch); lần sau chỉ tải patch mới, dùng được khi offline
 ├── champions_cache.json  ← tự sinh sau mỗi lần tải danh sách tướng: mọi tên (2 ngôn ngữ, mọi mùa) + cặp alias, để so OCR khi offline
+├── portraits/            ← tự sinh: ảnh thẻ tự học (index.json + p00001.png...). Xóa = học lại từ đầu
 ├── templates/            ← Dùng khi bật "Bắt theo ảnh"
 │   ├── Aatrox__TFT18_Aatrox.png ← ảnh tải tự động từ Data Dragon (tên file kèm tên ảnh gốc → mỗi mùa một ảnh riêng)
 │   └── custom_Aatrox.png ← ảnh upload thủ công (nhận diện chính xác hơn)
@@ -475,7 +586,8 @@ mà quên ghi vào bảng này.
 | `buy_cooldown_ms`                    | Nghỉ giữa hai lần mua cùng một ô (90; 0–5000 ms)                                                    |
 | `card_same_corr`                     | Hệ số tương quan để coi hai khung hình là CÙNG một thẻ (0.80; 0.5–0.99); dùng để chặn khung cũ và khóa ô vừa mua |
 | `require_game_foreground`            | Chỉ click khi cửa sổ game đang ở trước (true). Tắt thì mua cả khi đang ở app khác                    |
-| `game_process_names`                 | Tên tiến trình game để kiểm tra ở trên (`["League of Legends.exe"]`)                                |
+| `verbose_log`                        | Nhật ký chi tiết (true): dòng `Shop: ...` mỗi lần roll và `Gần khớp ...`; false = chỉ lỗi, mua và tổng kết |
+| `game_process_names`                 | Tên tiến trình game để kiểm tra ở trên, **cộng thêm** các tên đã biết luôn được nhận: `League of Legends.exe` và `TFTClient-Win64-Shipping.exe` (client TFT mới, Unreal; lớp cửa sổ `UnrealWindow`) |
 | `hotkey_toggle`                      | Phím bật/tắt toàn cục (`f8`); sai thì dùng F8 và báo trong Nhật ký                                  |
 | `roll_key`                           | Phím roll trong game (`d`): bấm thì app quét dày ~0,5 giây; rỗng = tắt; trùng phím bật/tắt thì bỏ qua |
 | `capture_backend`                    | Cách chụp màn hình: `auto` (thử DXGI ~1 ms/khung, tự quay về mss nếu không dùng được) hoặc `mss` (~11 ms) |

@@ -16,3 +16,4 @@ select = [
 [lint.per-file-ignores]
 # test_layout dùng lại fixture make_window/boxes của test_ui (import vào để pytest thấy) nên tham số cùng tên không phải lỗi.
 "tests/test_layout.py" = ["F811"]
+"tests/test_selected_panel.py" = ["F811"]  # cùng lý do: dùng lại fixture make_window/big

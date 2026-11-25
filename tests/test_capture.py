@@ -117,6 +117,12 @@ class TestOpenDxgi:
         src, why = cap.open_dxgi(REGION, lambda: frame(100), dx, no_sleep)
         assert src is not None and why == "DXGI"
 
+    def test_dxgi_that_is_black_only_for_the_first_frames_is_accepted(self):
+        """DXGI có thể chưa trả khung thật ngay lúc mở: chờ thêm vài lần thay vì bỏ DXGI ngay (log thật: 'DXGI trả khung đen')."""
+        dx = FakeDx(frames=[frame(0)] * 5 + [frame(100)])
+        src, why = cap.open_dxgi(REGION, lambda: frame(100), dx, no_sleep)
+        assert src is not None and why == "DXGI"
+
     def test_no_frame_from_camera_is_reported(self):
         dx = FakeDx(frames=[])
         src, why = cap.open_dxgi(REGION, lambda: frame(100), dx, no_sleep)
@@ -209,6 +215,32 @@ class TestDxgiSource:
         src.grab()
         assert len(calls) == 1
 
+    def test_animating_screen_is_never_counted_as_a_mismatch(self):
+        """Log thật: roll nhanh làm khung DXGI và khung mss (chụp trễ hơn ~20 ms) khác nhau → DXGI bị bỏ oan, quay về mss chậm."""
+        t = {"v": 0.0}
+        cam_frames = [frame(10 + (i % 2) * 150) for i in range(400)]  # khung nào cũng khác khung trước
+        src, cam = self.make(cam_frames, lambda: frame(100), lambda: t["v"])
+        for _ in range(20):
+            t["v"] += cap.CHECK_EVERY_S + 0.1
+            src.grab()  # không bao giờ ném CaptureMismatch dù khung DXGI luôn khác khung mss
+        assert src._bad == 0
+
+    def test_animation_check_is_retried_soon_not_after_the_full_period(self):
+        t = {"v": 100.0}
+        src, _ = self.make([frame(10), frame(200)] * 10, lambda: frame(100), lambda: t["v"])
+        src._next_check = 0
+        src.grab()
+        assert src._next_check == t["v"] + cap.RECHECK_AFTER_ANIMATION_S
+
+    def test_a_static_screen_that_still_disagrees_with_mss_is_still_caught(self):
+        t = {"v": 0.0}
+        src, _ = self.make([frame(10)], lambda: frame(200), lambda: t["v"])  # đứng yên (hai khung DXGI y hệt) mà vẫn khác mss
+        t["v"] = cap.CHECK_EVERY_S + 0.1
+        src.grab()
+        t["v"] += cap.CHECK_EVERY_S + 0.1
+        with pytest.raises(cap.CaptureMismatch):
+            src.grab()
+
     def test_black_dxgi_frame_while_screen_is_not_black_counts_as_mismatch(self):
         t = {"v": cap.CHECK_EVERY_S + 1}
         src, _ = self.make([frame(0)], lambda: frame(3), lambda: t["v"])
@@ -224,6 +256,58 @@ class TestDxgiSource:
         assert cam.released
         cam.release = lambda: (_ for _ in ()).throw(RuntimeError("x"))
         src.close()
+
+
+class TestTransientAccessLoss:
+    """Game đổi chế độ hiển thị → DXGI_ERROR_ACCESS_LOST (0x887A0026): dxcam tự phục hồi nhưng trong lúc đó không có khung."""
+
+    def make(self, clock, tolerate=cap.NONE_TOLERANCE_S, ref=lambda: frame(77)):
+        cam = FakeCam((0, 0, 1920, 1080), [])
+        src = cap.DxgiSource(cam, (0, 0, 400, 80), ref, clock)
+        src.tolerate_none_s = tolerate
+        return src, cam
+
+    def test_a_new_source_is_strict(self):
+        assert cap.DxgiSource(FakeCam((0, 0, 1, 1), []), (0, 0, 4, 4), lambda: frame(), lambda: 0.0).tolerate_none_s == 0.0
+
+    def test_missing_frames_inside_the_tolerance_are_served_from_mss(self):
+        t = {"v": 0.0}
+        src, _ = self.make(lambda: t["v"])
+        got = src.grab()
+        t["v"] = cap.NONE_TOLERANCE_S - 0.1
+        got2 = src.grab()
+        assert int(got[0, 0, 0]) == 77 and int(got2[0, 0, 0]) == 77 and src.none_frames == 2
+
+    def test_missing_frames_beyond_the_tolerance_raise_with_the_duration(self):
+        t = {"v": 0.0}
+        src, _ = self.make(lambda: t["v"])
+        src.grab()
+        t["v"] = cap.NONE_TOLERANCE_S + 0.1
+        with pytest.raises(cap.CaptureMismatch, match="suốt 2 giây"):
+            src.grab()
+
+    def test_recovery_returns_dxgi_frames_and_restarts_the_clock(self):
+        t = {"v": 0.0}
+        src, cam = self.make(lambda: t["v"])
+        src.grab()
+        t["v"] = 1.5
+        cam.frames = [frame(90)]  # phục hồi
+        assert int(src.grab()[0, 0, 0]) == 90 and src.none_frames == 1
+        cam.frames = []
+        t["v"] = 10.0  # lần mất khung SAU đó là một đợt mới, không cộng dồn với đợt trước
+        src.grab()
+        t["v"] = 10.0 + cap.NONE_TOLERANCE_S - 0.1
+        src.grab()  # chưa đủ hạn → vẫn không ném lỗi
+
+    def test_open_enables_the_tolerance_only_after_the_check_against_mss(self):
+        dx = FakeDx(frames=[frame(100)])
+        src, why = cap.open_dxgi(REGION, lambda: frame(100), dx, no_sleep)
+        assert src is not None and src.tolerate_none_s == cap.NONE_TOLERANCE_S
+
+    def test_open_check_is_not_fooled_by_the_mss_stand_in(self):
+        """Lúc mở mà DXGI không có khung thì phải báo (không được lấy khung mss thay rồi coi là khớp)."""
+        src, why = cap.open_dxgi(REGION, lambda: frame(100), FakeDx(frames=[]), no_sleep)
+        assert src is None and "không trả về khung" in why
 
 
 # ----------------------------------------------------------------------------- tích hợp scanner
@@ -337,7 +421,7 @@ class TestScannerIntegration:
         src = FakeSource(frames=[shop])
         s._dxgi = src
         slots = s._slice_slots(shop)
-        s._buy_batch([(0, "Vex", 0.9, "ảnh", slots[0])], {}, 0.0)
+        s._buy_batch([(0, "Vex", 0.9, "ảnh", slots[0])], {})
         assert src.grabs == 1 and clicks == [s.slot_centers[0]]
 
 

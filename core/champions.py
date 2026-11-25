@@ -282,12 +282,6 @@ def merge_champions(entries: list[dict]) -> list[dict]:
     return sorted(cards, key=lambda c: (c["tier"], c["name"]))
 
 
-def latest_set(champions: list[dict]) -> int | None:
-    """Mùa mới nhất có trong danh sách (None nếu rỗng)."""
-    sets = [c["set"] for c in champions if c.get("set") is not None]
-    return max(sets) if sets else None
-
-
 def available_seasons(champions: list[dict]) -> list[int]:
     """Mọi mùa có tướng, mới nhất trước (để dựng danh sách chọn mùa)."""
     return sorted({s for c in champions for s in c.get("sets", ())}, reverse=True)

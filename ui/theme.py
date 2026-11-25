@@ -156,6 +156,23 @@ QComboBox {{ background: {p.surface}; border: 1px solid {p.border}; border-radiu
 QScrollBar:vertical {{ background: transparent; width: 12px; }}
 QScrollBar::handle:vertical {{ background: {p.border}; border-radius: 5px; min-height: 30px; }}
 QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; width: 0; }}
-QSplitter::handle {{ background: {p.border}; width: 1px; }}
+QSplitter::handle:horizontal {{ width: 8px; background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 transparent, stop:0.35 transparent,
+    stop:0.36 {p.border}, stop:0.64 {p.border}, stop:0.65 transparent, stop:1 transparent); }}
+QSplitter::handle:vertical {{ height: 8px; background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 transparent, stop:0.35 transparent,
+    stop:0.36 {p.border}, stop:0.64 {p.border}, stop:0.65 transparent, stop:1 transparent); }}
+QSplitter::handle:horizontal:hover, QSplitter::handle:horizontal:pressed {{ background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 transparent,
+    stop:0.3 transparent, stop:0.31 {p.accent_line}, stop:0.69 {p.accent_line}, stop:0.7 transparent, stop:1 transparent); }}
+QSplitter::handle:vertical:hover, QSplitter::handle:vertical:pressed {{ background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 transparent,
+    stop:0.3 transparent, stop:0.31 {p.accent_line}, stop:0.69 {p.accent_line}, stop:0.7 transparent, stop:1 transparent); }}
+QFrame[chipsel="true"] {{ background: {p.surface2}; border: 1px solid {p.border}; border-left: 3px solid {p.border}; border-radius: 10px; }}
+QFrame[chipsel="true"][tier="1"] {{ border-left-color: {p.cost[0]}; }}
+QFrame[chipsel="true"][tier="2"] {{ border-left-color: {p.cost[1]}; }}
+QFrame[chipsel="true"][tier="3"] {{ border-left-color: {p.cost[2]}; }}
+QFrame[chipsel="true"][tier="4"] {{ border-left-color: {p.cost[3]}; }}
+QFrame[chipsel="true"][tier="5"] {{ border-left-color: {p.cost[4]}; }}
+QFrame[chipsel="true"][manual="true"] {{ border-style: dashed; }}
+QFrame[chipsel="true"] QLabel {{ border: none; background: transparent; }}
+QToolButton[chipx="true"] {{ border: none; border-radius: 8px; padding: 0 6px; color: {p.muted}; font-weight: 700; background: transparent; }}
+QToolButton[chipx="true"]:hover {{ background: {p.fail}; color: #ffffff; }}
 QScrollArea {{ border: none; }}
 """

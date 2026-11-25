@@ -9,14 +9,14 @@ from tests.helpers import CENTERS, REGION, make_card, make_shop
 
 def new_running(make_scanner, **kw):
     s = make_scanner(**kw)
-    s._running = True  # _try_buy chỉ click khi đang chạy; không cần dựng thread thật
+    s._running = True  # _buy_batch chỉ click khi đang chạy; không cần dựng thread thật
     return s
 
 
 def attempt(s, analyzed_shop, current_shop, slot=0, name="Vex", cooldown=None, method="tên"):
     """Mô phỏng: nhận diện trên analyzed_shop, tới lúc click thì màn hình đang là current_shop."""
     s._grab_shop = lambda: current_shop
-    s._try_buy(slot, name, 1.0, method, {} if cooldown is None else cooldown, s._slice_slots(analyzed_shop)[slot])
+    s._buy_batch([(slot, name, 1.0, method, s._slice_slots(analyzed_shop)[slot])], {} if cooldown is None else cooldown)
 
 
 class TestGeometry:
@@ -83,7 +83,7 @@ class TestStaleFrameProtection:
         s = new_running(make_scanner)
         shop = make_shop(s, [1, 2, 3, 4, 5])
         s._grab_shop = lambda: None
-        s._try_buy(0, "Vex", 1.0, "tên", {}, s._slice_slots(shop)[0])
+        s._buy_batch([(0, "Vex", 1.0, "tên", s._slice_slots(shop)[0])], {})
         assert clicks == []
 
     def test_stop_during_verification_does_not_click(self, make_scanner, clicks):
@@ -96,7 +96,7 @@ class TestStaleFrameProtection:
             return shop
 
         s._grab_shop = grab_then_stop
-        s._try_buy(0, "Vex", 1.0, "tên", {}, s._slice_slots(shop)[0])
+        s._buy_batch([(0, "Vex", 1.0, "tên", s._slice_slots(shop)[0])], {})
         assert clicks == []
 
     def test_not_running_does_not_click(self, make_scanner, clicks):
@@ -140,6 +140,16 @@ class TestSlotLock:
         assert clicks == [CENTERS[0], CENTERS[3]]
 
 
+class _Blocks:
+    """Chỉ đếm các dòng 'Không click...' trong danh sách Nhật ký (bỏ các dòng chẩn đoán đi kèm lần đầu bị chặn)."""
+
+    def __init__(self, logs):
+        self._logs = logs
+
+    def __len__(self):
+        return sum(1 for m in self._logs if m.startswith("Không click"))
+
+
 class TestForegroundGate:
     def test_blocked_when_game_not_foreground_and_status_reported_once(self, make_scanner, clicks, foreground):
         msgs = []
@@ -159,6 +169,100 @@ class TestForegroundGate:
         foreground["value"] = True
         attempt(s, shop, shop)
         assert len(clicks) == 1 and msgs[-1] == "Đang quét shop..."
+
+    def test_waits_for_game_to_settle_after_regaining_focus(self, make_scanner, clicks, foreground, monkeypatch):
+        """Log thật: click gửi NGAY lúc game vừa lên trước (Alt-Tab) thì thẻ vẫn còn. Phải chờ cửa sổ kích hoạt xong rồi mới click."""
+        monkeypatch.setattr(sc, "FOREGROUND_SETTLE_S", 0.35)
+        msgs, logs = [], []
+        s = new_running(make_scanner, on_status=msgs.append, on_log=logs.append)
+        shop = make_shop(s, [1, 2, 3, 4, 5])
+        foreground["value"] = False
+        attempt(s, shop, shop)
+        blocked_logs = len(logs)
+        foreground["value"] = True
+        attempt(s, shop, shop)  # game vừa lên trước
+        assert clicks == [] and s._click_blocked
+        assert len(logs) == blocked_logs and msgs == ["Game không ở foreground — tạm không click"]  # đang chờ ≠ "không ở foreground"
+        s._front_since -= 1.0  # game đã ở trước đủ lâu
+        attempt(s, shop, shop)
+        assert len(clicks) == 1 and not s._click_blocked and msgs[-1] == "Đang quét shop..."
+
+    def test_leaving_the_game_again_restarts_the_settle_wait(self, make_scanner, clicks, foreground, monkeypatch):
+        monkeypatch.setattr(sc, "FOREGROUND_SETTLE_S", 0.35)
+        s = new_running(make_scanner)
+        shop = make_shop(s, [1, 2, 3, 4, 5])
+        foreground["value"] = False
+        attempt(s, shop, shop)
+        foreground["value"] = True
+        attempt(s, shop, shop)
+        s._front_since -= 1.0
+        foreground["value"] = False  # ra khỏi game trước khi click được
+        attempt(s, shop, shop)
+        assert s._front_since is None
+        foreground["value"] = True
+        attempt(s, shop, shop)
+        assert clicks == []  # phải đợi lại từ đầu
+
+    def test_game_in_front_from_the_start_is_not_delayed(self, make_scanner, clicks, foreground, monkeypatch):
+        monkeypatch.setattr(sc, "FOREGROUND_SETTLE_S", 0.35)
+        s = new_running(make_scanner)
+        shop = make_shop(s, [1, 2, 3, 4, 5])
+        attempt(s, shop, shop)
+        assert len(clicks) == 1
+
+    def test_unconfirmed_click_reports_how_long_after_game_came_to_front(self, make_scanner, clicks, foreground):
+        logs = []
+        s = new_running(make_scanner, on_log=logs.append)
+        s._click_unconfirmed(1, "Akali", 0.9, 0.04)
+        s._click_unconfirmed(4, "Akali", 0.9)
+        assert "Click được gửi 0.04 giây sau khi game lên trước" in logs[0]
+        assert "Click được gửi" not in logs[1]
+
+    def test_block_logs_which_window_is_in_front(self, make_scanner, clicks, foreground):
+        """Bị chặn vì foreground thì Nhật ký phải nói cửa sổ nào đang ở trước (để phân biệt 'đang ở app khác' với 'không nhận ra game')."""
+        logs = []
+        s = new_running(make_scanner, on_log=logs.append)
+        shop = make_shop(s, [1, 2, 3, 4, 5])
+        foreground["value"] = False
+        attempt(s, shop, shop)
+        assert logs[0].startswith("Không click") and "notepad.exe" in logs[0] and "RiotWindowClass" in logs[0]
+        assert logs[1:] == ["Chẩn đoán: giả lập."]  # lần đầu của đợt bị chặn: kèm chẩn đoán môi trường
+
+    def test_block_log_is_throttled_then_repeats_and_resets(self, make_scanner, clicks, foreground):
+        all_logs, clock = [], {"t": 100.0}
+        s = new_running(make_scanner, on_log=all_logs.append)
+        logs = _Blocks(all_logs)
+        s._now = lambda: clock["t"]
+        shop = make_shop(s, [1, 2, 3, 4, 5])
+        foreground["value"] = False
+        attempt(s, shop, shop)
+        clock["t"] += sc.FOREGROUND_LOG_EVERY_S - 1
+        attempt(s, shop, shop)
+        assert len(logs) == 1  # chưa đủ lâu: không ghi lại
+        clock["t"] += 2
+        attempt(s, shop, shop)
+        assert len(logs) == 2  # còn bị chặn sau FOREGROUND_LOG_EVERY_S: nhắc lại
+        foreground["value"] = True
+        attempt(s, shop, shop)  # game quay lại foreground → click, xóa dấu
+        foreground["value"] = False
+        s._locked.clear()
+        attempt(s, shop, shop)
+        assert len(logs) == 3  # lần chặn mới ghi ngay, không chờ hết chu kỳ cũ
+
+    def test_blocked_state_clears_by_itself_when_game_returns(self, make_scanner, clicks, foreground):
+        """Trước đây cờ 'bị chặn' chỉ được xóa khi có ứng viên mua: màn hình mãi báo 'không ở foreground' và vòng quét cứ phải OCR cả 5 ô."""
+        msgs, logs = [], []
+        s = new_running(make_scanner, on_status=msgs.append, on_log=logs.append)
+        shop = make_shop(s, [1, 2, 3, 4, 5])
+        s._grab_shop = lambda: shop
+        s._click_blocked = True
+        foreground["value"] = False
+        s._scan_once({})
+        assert s._click_blocked is True
+        foreground["value"] = True
+        s._scan_once({})
+        assert s._click_blocked is False and msgs[-1] == "Đang quét shop..."
+        assert any("foreground trở lại" in m for m in logs)
 
     def test_check_can_be_disabled(self, make_scanner, clicks, foreground):
         s = new_running(make_scanner, require_game_foreground=False)

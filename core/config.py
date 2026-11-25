@@ -22,6 +22,7 @@ def app_base_dir() -> Path:
 BASE_DIR = app_base_dir()
 DATA_DIR = BASE_DIR / "data"
 TEMPLATES_DIR = DATA_DIR / "templates"
+PORTRAITS_DIR = DATA_DIR / "portraits"  # ảnh thẻ tự học (core/portraits.py): tool tự ghi, xóa thư mục này là học lại từ đầu
 CONFIG_PATH = DATA_DIR / "config.json"
 SHOP_CAPTURE_PATH = DATA_DIR / "shop_capture.png"  # ảnh chụp vùng shop SẠCH (không viền/chấm)
 LEGACY_SHOP_PREVIEW_PATH = DATA_DIR / "shop_preview.png"  # kiểu cũ: ảnh đã vẽ chấm; được xóa khi lưu ảnh mới
@@ -39,6 +40,7 @@ DEFAULT_CONFIG = {
     "require_game_foreground": True,
     "game_process_names": ["League of Legends.exe"],
     "hotkey_toggle": "f8",
+    "verbose_log": True,  # Nhật ký chi tiết: dòng "Shop: ..." mỗi lần roll và "gần khớp" (false = chỉ lỗi, mua, tổng kết)
     "capture_backend": "auto",  # cách chụp màn hình: auto (thử DXGI, tự quay về mss) hoặc mss
     "roll_key": "d",  # phím roll trong game: bấm thì app quét dày ~0,5 giây; "" = tắt
     "champion_locale": "vi_VN",  # ngôn ngữ danh sách tướng (vi_VN, en_US...); alias ngôn ngữ kia luôn được khớp
@@ -52,6 +54,17 @@ DEFAULT_CONFIG = {
     "name_match_threshold": 0.80,
     "name_scan_interval_ms": 50,
 }
+
+
+# Process game đã biết: LUÔN được nhận, cộng với `game_process_names` trong config. Client TFT mới (Unreal) chạy bằng
+# TFTClient-Win64-Shipping.exe chứ không phải League of Legends.exe; config cũ đã lưu ["League of Legends.exe"] nên chỉ đổi mặc
+# định thì người dùng cũ vẫn không được nhận.
+KNOWN_GAME_PROCESSES = ("League of Legends.exe", "TFTClient-Win64-Shipping.exe")
+
+
+def game_process_set(names) -> frozenset[str]:
+    """Tập tên process (chữ thường) được coi là game: các tên đã biết + tên người dùng cấu hình."""
+    return frozenset(str(n).lower() for n in [*KNOWN_GAME_PROCESSES, *(names or [])])
 
 
 # Phiên bản hệ tọa độ của shop_region/slot_centers. 2 = pixel vật lý (tiến trình DPI-aware, xem core/dpi.py).
@@ -147,7 +160,7 @@ NUMERIC_LIMITS: dict[str, tuple[float, float]] = {
     "buy_cooldown_ms": (0, 5000),
 }
 _INT_KEYS = {"scan_interval_ms", "name_scan_interval_ms", "buy_delay_ms", "buy_cooldown_ms"}
-_BOOL_KEYS = ("require_game_foreground", "detect_by_image", "detect_by_name")
+_BOOL_KEYS = ("require_game_foreground", "detect_by_image", "detect_by_name", "verbose_log")
 _TRUE_WORDS = {"true", "yes", "on", "1", "có", "co"}
 _FALSE_WORDS = {"false", "no", "off", "0", "không", "khong"}
 _REGION_KEYS = ("left", "top", "width", "height")

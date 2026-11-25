@@ -65,7 +65,8 @@ def make_window(qtbot, data_dir, monkeypatch, boxes):
 
         w = mw.MainWindow(make, overlay_factory=overlay_factory)
         qtbot.addWidget(w)
-        w.resize(*size)
+        if size is not None:  # None: giữ cỡ mặc định MainWindow tự chọn theo màn hình
+            w.resize(*size)
         w.show()
         QApplication.processEvents()
         created.append(w)

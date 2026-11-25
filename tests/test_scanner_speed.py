@@ -36,7 +36,7 @@ class TestBuyBatch:
         shop = make_shop(s, [1, 2, 3, 4, 5])
         grabs = []
         s._grab_shop = lambda: grabs.append(1) or shop
-        s._buy_batch(cands(s, shop, [0, 2, 4]), {}, 0.0)
+        s._buy_batch(cands(s, shop, [0, 2, 4]), {})
         assert len(grabs) == 1  # trước đây: mỗi ô một lần chụp lại (~12 ms mỗi lần)
         assert clicks == [s.slot_centers[0], s.slot_centers[2], s.slot_centers[4]]
 
@@ -45,7 +45,7 @@ class TestBuyBatch:
         s = running(make_scanner, require_game_foreground=False, on_match=lambda *a: got.append(a))
         shop = make_shop(s, [1, 2, 3, 4, 5])
         s._grab_shop = lambda: shop
-        s._buy_batch(cands(s, shop, [1, 3]), {}, 0.0)
+        s._buy_batch(cands(s, shop, [1, 3]), {})
         assert [(g[0], g[1]) for g in got] == [("Zed", 2), ("Ahri", 4)] and set(s._locked) == {1, 3}
 
     def test_only_the_changed_slot_is_dropped(self, make_scanner, clicks):
@@ -53,7 +53,7 @@ class TestBuyBatch:
         analyzed = make_shop(s, [1, 2, 3, 4, 5])
         current = make_shop(s, [1, 2, 99, 4, 5])  # ô 3 vừa roll sang thẻ khác
         s._grab_shop = lambda: current
-        s._buy_batch(cands(s, analyzed, [0, 2, 4]), {}, 0.0)
+        s._buy_batch(cands(s, analyzed, [0, 2, 4]), {})
         assert clicks == [s.slot_centers[0], s.slot_centers[4]]
 
     def test_changed_card_is_reported_with_correlation(self, make_scanner, clicks):
@@ -61,7 +61,7 @@ class TestBuyBatch:
         s = running(make_scanner, require_game_foreground=False, on_log=log)
         analyzed = make_shop(s, [1, 2, 3, 4, 5])
         s._grab_shop = lambda: make_shop(s, [99, 2, 3, 4, 5])
-        s._buy_batch(cands(s, analyzed, [0]), {}, 0.0)
+        s._buy_batch(cands(s, analyzed, [0]), {})
         assert clicks == []
         assert "Bỏ click Vex ô 1: thẻ đã đổi giữa lúc nhận diện và xác nhận" in log.text() and "< 0.80" in log.text()
 
@@ -73,10 +73,10 @@ class TestBuyBatch:
         analyzed = make_shop(s, [1, 2, 3, 4, 5])
         s._grab_shop = lambda: make_shop(s, [99, 2, 3, 4, 5])
         for _ in range(4):
-            s._buy_batch(cands(s, analyzed, [0]), {}, 0.0)
+            s._buy_batch(cands(s, analyzed, [0]), {})
         assert len(log.lines) == 1  # 3 lần sau bị nén trong cùng giây
         clock["t"] += sc.SKIP_LOG_EVERY_S + 0.1
-        s._buy_batch(cands(s, analyzed, [0]), {}, 0.0)
+        s._buy_batch(cands(s, analyzed, [0]), {})
         assert len(log.lines) == 2 and "(+3 lần nữa trong giây trước)" in log.lines[1]
 
     def test_different_slots_are_logged_separately(self, make_scanner, clicks):
@@ -84,7 +84,7 @@ class TestBuyBatch:
         s = running(make_scanner, require_game_foreground=False, on_log=log)
         analyzed = make_shop(s, [1, 2, 3, 4, 5])
         s._grab_shop = lambda: make_shop(s, [99, 98, 3, 4, 5])
-        s._buy_batch(cands(s, analyzed, [0, 1]), {}, 0.0)
+        s._buy_batch(cands(s, analyzed, [0, 1]), {})
         assert len(log.lines) == 2
 
     def test_cooldown_duplicates_are_silent_and_cost_no_capture(self, make_scanner, clicks):
@@ -94,7 +94,7 @@ class TestBuyBatch:
         grabs = []
         s._grab_shop = lambda: grabs.append(1) or shop
         cd = {(0, "Vex"): sc.time.perf_counter()}
-        s._buy_batch(cands(s, shop, [0]), cd, 0.0)
+        s._buy_batch(cands(s, shop, [0]), cd)
         assert grabs == [] and clicks == [] and log.lines == []
 
     def test_foreground_blocked_means_no_capture_and_no_click(self, make_scanner, clicks, foreground):
@@ -104,7 +104,7 @@ class TestBuyBatch:
         shop = make_shop(s, [1, 2, 3, 4, 5])
         grabs = []
         s._grab_shop = lambda: grabs.append(1) or shop
-        s._buy_batch(cands(s, shop, [0]), {}, 0.0)
+        s._buy_batch(cands(s, shop, [0]), {})
         assert grabs == [] and clicks == [] and s._click_blocked and statuses == ["Game không ở foreground — tạm không click"]
 
     def test_capture_failure_is_reported(self, make_scanner, clicks):
@@ -112,7 +112,7 @@ class TestBuyBatch:
         s = running(make_scanner, require_game_foreground=False, on_log=log)
         s._grab_shop = lambda: None
         shop = make_shop(s, [1, 2, 3, 4, 5])
-        s._buy_batch(cands(s, shop, [0]), {}, 0.0)
+        s._buy_batch(cands(s, shop, [0]), {})
         assert clicks == [] and "không chụp lại được shop" in log.text()
 
     def test_stop_during_verification_prevents_click(self, make_scanner, clicks):
@@ -124,15 +124,15 @@ class TestBuyBatch:
             return shop
 
         s._grab_shop = grab
-        s._buy_batch(cands(s, shop, [0]), {}, 0.0)
+        s._buy_batch(cands(s, shop, [0]), {})
         assert clicks == []
 
     def test_locked_slot_is_not_clicked_twice_in_a_batch(self, make_scanner, clicks):
         s = running(make_scanner, require_game_foreground=False)
         shop = make_shop(s, [1, 2, 3, 4, 5])
         s._grab_shop = lambda: shop
-        s._buy_batch(cands(s, shop, [0]), {}, 0.0)
-        s._buy_batch(cands(s, shop, [0]), {}, 0.0)
+        s._buy_batch(cands(s, shop, [0]), {})
+        s._buy_batch(cands(s, shop, [0]), {})
         assert len(clicks) == 1
 
 
@@ -143,7 +143,7 @@ class TestLatencyReporting:
         shop = make_shop(s, [1, 2, 3, 4, 5])
         s._grab_shop = lambda: shop
         s._first_seen[2] = sc.time.perf_counter() - 0.030  # thẻ hiện cách đây 30 ms
-        s._buy_batch(cands(s, shop, [2]), {}, 0.0)
+        s._buy_batch(cands(s, shop, [2]), {})
         assert len(s.latencies_ms) == 1 and 29 < s.latencies_ms[0] < 200
         assert "Jinx ô 3:" in log.text() and "ms từ lúc thẻ hiện (nhận diện" in log.text() and "xác nhận" in log.text()
 
@@ -151,7 +151,7 @@ class TestLatencyReporting:
         s = running(make_scanner, require_game_foreground=False)
         shop = make_shop(s, [1, 2, 3, 4, 5])
         s._grab_shop = lambda: shop
-        s._buy_batch(cands(s, shop, [0]), {}, 0.0)
+        s._buy_batch(cands(s, shop, [0]), {})
         assert len(s.latencies_ms) == 0
 
     def test_summary_on_stop_includes_latency_percentiles(self, make_scanner):
@@ -269,7 +269,17 @@ class TestOcrScheduling:
         s = make_scanner(name_scan_interval_ms=50)
         s._click_blocked = True
         s._last_idle_ocr = 100.0
+        s._last_blocked_ocr = 99.0
         assert s._ocr_due_slots(100.2, set()) == [0, 1, 2, 3, 4]
+
+    def test_blocked_scan_of_all_slots_is_throttled_so_ocr_does_not_pile_up(self, make_scanner):
+        """Bị chặn mà vẫn OCR cả 5 ô mỗi 50 ms thì OCR (cùng CPU với game) bị kẹt: chỉ làm mỗi BLOCKED_OCR_S."""
+        s = make_scanner(name_scan_interval_ms=50)
+        s._click_blocked = True
+        s._last_idle_ocr = 100.0
+        s._last_blocked_ocr = 100.0
+        assert s._ocr_due_slots(100.1, set()) == []
+        assert s._ocr_due_slots(100.0 + sc.BLOCKED_OCR_S + 0.01, set()) == [0, 1, 2, 3, 4]
 
     def test_zero_interval_ocr_every_loop_for_settling_slots(self, make_scanner):
         s = make_scanner(name_scan_interval_ms=0)
@@ -404,7 +414,8 @@ class TestScanOrdering:
 
 class TestStaticFrameSkip:
     def scanner(self, make_scanner, **kw):
-        s = running(make_scanner, require_game_foreground=False, **kw)
+        kw.setdefault("require_game_foreground", False)
+        s = running(make_scanner, **kw)
         s._ocr_pool = None
         self.matches = []
         self.ocr = []
@@ -452,12 +463,13 @@ class TestStaticFrameSkip:
         s._scan_once({})
         assert len(calls) == n + 5
 
-    def test_blocked_click_keeps_reprocessing_static_frames(self, make_scanner):
-        s = self.scanner(make_scanner)
+    def test_blocked_click_keeps_reprocessing_static_frames(self, make_scanner, foreground):
+        s = self.scanner(make_scanner, require_game_foreground=True)
         shop = make_shop(s, [1, 2, 3, 4, 5])
         s._grab_shop = lambda: shop.copy()
         s._scan_once({})
         s._click_blocked = True
+        foreground["value"] = False  # game vẫn không ở trước (nếu game quay lại thì cờ tự xóa, xem test_scanner)
         s._scan_once({})
         assert len(self.matches) == 10
 

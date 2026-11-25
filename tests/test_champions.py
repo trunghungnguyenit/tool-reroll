@@ -248,7 +248,7 @@ class TestMergeChampions:
         assert entries == before
 
     def test_empty_input(self):
-        assert champions.merge_champions([]) == [] and champions.latest_set([]) is None
+        assert champions.merge_champions([]) == []
         assert champions.available_seasons([]) == [] and champions.visible_champions([], set()) == []
 
 
@@ -273,8 +273,8 @@ class TestSeasons:
     def test_unknown_season_shows_nothing(self):
         assert self.names({3}) == set()
 
-    def test_available_seasons_newest_first_and_latest_set(self):
-        assert champions.available_seasons(self.CARDS) == [18, 17] and champions.latest_set(self.CARDS) == 18
+    def test_available_seasons_newest_first(self):
+        assert champions.available_seasons(self.CARDS) == [18, 17]
 
     def test_labels_are_compact(self):
         card = lambda sets: {"sets": sets}  # noqa: E731
